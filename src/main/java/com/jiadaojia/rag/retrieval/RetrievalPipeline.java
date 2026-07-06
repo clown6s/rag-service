@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -88,7 +89,7 @@ public class RetrievalPipeline {
         public List<String> getSources() {
             return segments.stream()
                     .map(s -> s.metadata().getString("source"))
-                    .filter(s -> s != null)
+                    .filter(Objects::nonNull)
                     .distinct()
                     .collect(Collectors.toList());
         }

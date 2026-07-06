@@ -51,7 +51,7 @@ public class Reranker {
 
         List<String> documents = candidates.stream()
                 .map(TextSegment::text)
-                .collect(Collectors.toList());
+                .toList();
 
         Map<String, Object> body = Map.of(
                 "model", model,
