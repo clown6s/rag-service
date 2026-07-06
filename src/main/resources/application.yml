@@ -1,0 +1,75 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: rag-service
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+
+# ============================================================
+# LangChain4j 配置
+# ============================================================
+langchain4j:
+  open-ai:
+    # DeepSeek V3 — 主力对话 + Prompt改写 + 摘要
+    deepseek:
+      api-key: ${DEEPSEEK_API_KEY:sk-deepseek-placeholder}
+      base-url: https://api.deepseek.com/v1
+      chat-model:
+        model-name: deepseek-chat
+        temperature: 0.3
+        max-tokens: 4096
+        timeout: 60s
+      # DeepSeek R1 — Agentic路由推理
+      reasoner:
+        model-name: deepseek-reasoner
+        temperature: 0.1
+        max-tokens: 2048
+        timeout: 120s
+
+  # Embedding
+  embedding:
+    # BGE-M3 (可通过硅基流动 API 或本地部署)
+    base-url: https://api.siliconflow.cn/v1
+    api-key: ${SILICONFLOW_API_KEY:sk-siliconflow-placeholder}
+    model: BAAI/bge-m3
+    dimension: 1024
+
+# ============================================================
+# Milvus 向量数据库
+# ============================================================
+milvus:
+  host: ${MILVUS_HOST:10.211.55.30}
+  port: ${MILVUS_PORT:19530}
+  database: rag_knowledge
+  collection: documents
+  dimension: 1024
+  index-type: HNSW
+  metric-type: COSINE
+  # Milvus 2.5 原生 BM25 全文索引
+  enable-fulltext: true
+
+# ============================================================
+# RAG 参数
+# ============================================================
+rag:
+  chunking:
+    max-segment-size: 512     # tokens
+    overlap-size: 50
+  retrieval:
+    top-k: 20                 # 混合检索召回数
+    final-k: 5                # Rerank 后保留数
+    bm25-weight: 0.3
+    vector-weight: 0.7
+  rerank:
+    model: bge-reranker-v2-m3
+    api-url: https://api.siliconflow.cn/v1/rerank
+  rewrite:
+    multi-query-count: 3
+  upload:
+    max-file-size: 20MB
+    allowed-types: pdf,docx,doc,md,txt,html
+
