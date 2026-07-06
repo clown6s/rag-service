@@ -46,6 +46,9 @@ public class ContextualChunker {
      * 上下文增强 + 切分
      */
     public List<TextSegment> chunk(String rawText, String fileName) {
+        if (rawText == null) rawText = "";
+        if (fileName == null) fileName = "unknown";
+
         // Step 1: LLM 生成文档级摘要
         String docSummary = generateSummary(rawText, fileName);
 
@@ -126,8 +129,13 @@ public class ContextualChunker {
         }
 
         private List<TextSegment> splitRecursive(String text, String[] seps, int depth, Metadata meta) {
-            if (text.length() <= maxSize || depth >= seps.length) {
+            if (text.length() <= maxSize) {
                 return List.of(TextSegment.from(text, meta.copy()));
+            }
+
+            // 已无更细的分隔符，硬切
+            if (depth >= seps.length) {
+                return hardSplit(text, meta);
             }
 
             String[] parts = text.split(seps[depth], -1);
@@ -135,11 +143,25 @@ public class ContextualChunker {
             StringBuilder current = new StringBuilder();
 
             for (String part : parts) {
+                // 单个 part 超长 → 递归用下一层分隔符切
+                if (part.length() > maxSize) {
+                    // 先把 current 落盘
+                    if (!current.isEmpty()) {
+                        result.add(TextSegment.from(current.toString(), meta.copy()));
+                        String saved = current.toString();
+                        int start = Math.max(0, saved.length() - overlap);
+                        current = new StringBuilder(saved.substring(start));
+                    }
+                    // 递归切超长 part
+                    result.addAll(splitRecursive(part, seps, depth + 1, meta));
+                    current.setLength(0);
+                    continue;
+                }
+
                 String candidate = current.isEmpty() ? part : current + seps[depth] + part;
 
                 if (candidate.length() > maxSize && !current.isEmpty()) {
                     result.add(TextSegment.from(current.toString(), meta.copy()));
-                    // overlap: 保留最后 overlap 个字符
                     String saved = current.toString();
                     int start = Math.max(0, saved.length() - overlap);
                     current = new StringBuilder(saved.substring(start));
@@ -157,6 +179,16 @@ public class ContextualChunker {
                 result.add(TextSegment.from(current.toString(), meta.copy()));
             }
 
+            return result;
+        }
+
+        /** 兜底硬切：按 maxSize 强制截断 */
+        private List<TextSegment> hardSplit(String text, Metadata meta) {
+            java.util.List<TextSegment> result = new java.util.ArrayList<>();
+            for (int i = 0; i < text.length(); i += maxSize - overlap) {
+                int end = Math.min(i + maxSize, text.length());
+                result.add(TextSegment.from(text.substring(i, end), meta.copy()));
+            }
             return result;
         }
     }

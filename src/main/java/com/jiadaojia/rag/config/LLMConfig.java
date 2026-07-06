@@ -33,14 +33,14 @@ public class LLMConfig {
             @Value("${langchain4j.open-ai.deepseek.chat-model.model-name}") String model,
             @Value("${langchain4j.open-ai.deepseek.chat-model.temperature}") double temperature,
             @Value("${langchain4j.open-ai.deepseek.chat-model.max-tokens}") int maxTokens,
-            @Value("${langchain4j.open-ai.deepseek.chat-model.timeout}") String timeout) {
+            @Value("${langchain4j.open-ai.deepseek.chat-model.timeout}") Duration timeout) {
         return OpenAiChatModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
                 .modelName(model)
                 .temperature(temperature)
                 .maxTokens(maxTokens)
-                .timeout(Duration.parse("PT" + timeout))
+                .timeout(timeout)
                 .build();
     }
 
@@ -50,14 +50,14 @@ public class LLMConfig {
             @Value("${langchain4j.open-ai.deepseek.chat-model.model-name}") String model,
             @Value("${langchain4j.open-ai.deepseek.chat-model.temperature}") double temperature,
             @Value("${langchain4j.open-ai.deepseek.chat-model.max-tokens}") int maxTokens,
-            @Value("${langchain4j.open-ai.deepseek.chat-model.timeout}") String timeout) {
+            @Value("${langchain4j.open-ai.deepseek.chat-model.timeout}") Duration timeout) {
         return OpenAiStreamingChatModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
                 .modelName(model)
                 .temperature(temperature)
                 .maxTokens(maxTokens)
-                .timeout(Duration.parse("PT" + timeout))
+                .timeout(timeout)
                 .build();
     }
 
@@ -69,14 +69,14 @@ public class LLMConfig {
             @Value("${langchain4j.open-ai.deepseek.reasoner.model-name}") String model,
             @Value("${langchain4j.open-ai.deepseek.reasoner.temperature}") double temperature,
             @Value("${langchain4j.open-ai.deepseek.reasoner.max-tokens}") int maxTokens,
-            @Value("${langchain4j.open-ai.deepseek.reasoner.timeout}") String timeout) {
+            @Value("${langchain4j.open-ai.deepseek.reasoner.timeout}") Duration timeout) {
         return OpenAiChatModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
                 .modelName(model)
                 .temperature(temperature)
                 .maxTokens(maxTokens)
-                .timeout(Duration.parse("PT" + timeout))
+                .timeout(timeout)
                 .build();
     }
 

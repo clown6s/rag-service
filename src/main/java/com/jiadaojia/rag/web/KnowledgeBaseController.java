@@ -1,13 +1,15 @@
 package com.jiadaojia.rag.web;
 
-import dev.langchain4j.store.embedding.milvus.MilvusEmbeddingStore;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.collection.request.DropCollectionReq;
-import lombok.RequiredArgsConstructor;
+import io.milvus.v2.service.collection.request.GetCollectionStatsReq;
+import io.milvus.v2.service.collection.response.GetCollectionStatsResp;
+import io.milvus.v2.service.vector.request.DeleteReq;
+import io.milvus.v2.service.vector.response.DeleteResp;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.Map;
 
 /**
  * 知识库管理 API
@@ -19,38 +21,65 @@ import java.util.Map;
 @Slf4j
 @RestController
 @RequestMapping("/api/rag/admin")
-@RequiredArgsConstructor
 public class KnowledgeBaseController {
 
-    private final MilvusEmbeddingStore embeddingStore;
     private final MilvusClientV2 milvusClient;
+
+    public KnowledgeBaseController(@Lazy MilvusClientV2 milvusClient) {
+        this.milvusClient = milvusClient;
+    }
+
+    @Value("${milvus.collection}")
+    private String collectionName;
+
+    @Value("${milvus.dimension}")
+    private int dimension;
+
+    @Value("${milvus.index-type}")
+    private String indexType;
+
+    public record DeleteResult(String docId, long chunksRemoved) {}
+    public record ReindexResult(String status) {}
+    public record StatsResult(String collection, String status, long totalDocuments,
+                              long totalChunks, int vectorDimension, String indexType) {}
 
     /**
      * 按文档 ID 删除全部 chunks
      */
     @DeleteMapping("/documents/{docId}")
-    public Map<String, Object> deleteDocument(@PathVariable String docId) {
-        // Milvus v2 删除方式: 通过 filter 表达式
-        // embeddingStore.removeAll(filter) 在 LangChain4j 中的实现取决于版本
-        log.info("[管理] 删除文档 docId={}", docId);
-        return Map.of("success", true, "deleted", docId);
+    public ApiResponse<DeleteResult> deleteDocument(@PathVariable String docId) {
+        if (!docId.matches("^[0-9a-fA-F\\-]{36}$")) {
+            return ApiResponse.fail("非法的文档ID格式");
+        }
+        try {
+            DeleteResp resp = milvusClient.delete(DeleteReq.builder()
+                    .collectionName(collectionName)
+                    .filter("metadata like '%\"document_id\":\"" + docId + "\"%'")
+                    .build());
+            long deleted = resp.getDeleteCnt();
+            log.info("[管理] 删除文档 docId={} 删除chunks={}", docId, deleted);
+            return ApiResponse.ok(new DeleteResult(docId, deleted));
+        } catch (Exception e) {
+            log.error("[管理] 删除文档失败 docId={}", docId, e);
+            return ApiResponse.fail("删除失败: " + e.getMessage());
+        }
     }
 
     /**
      * 全量重建索引（清空 collection + 重新摄入）
      */
     @PostMapping("/reindex")
-    public Map<String, Object> reindex() {
+    public ApiResponse<ReindexResult> reindex() {
         try {
             milvusClient.dropCollection(
                     DropCollectionReq.builder()
-                            .collectionName("documents")
+                            .collectionName(collectionName)
                             .build());
             log.info("[管理] 索引已清空");
-            return Map.of("success", true, "status", "索引已清空，请重新摄入文档");
+            return ApiResponse.ok(new ReindexResult("索引已清空，请重新摄入文档"));
         } catch (Exception e) {
             log.error("[管理] 清空索引失败", e);
-            return Map.of("success", false, "error", e.getMessage());
+            return ApiResponse.fail("清空索引失败: " + e.getMessage());
         }
     }
 
@@ -58,25 +87,18 @@ public class KnowledgeBaseController {
      * 知识库统计概览
      */
     @GetMapping("/stats")
-    public Map<String, Object> stats() {
+    public ApiResponse<StatsResult> stats() {
         try {
-            var desc = milvusClient.describeCollection(
-                    io.milvus.v2.service.collection.request.DescribeCollectionReq.builder()
-                            .collectionName("documents")
+            GetCollectionStatsResp statsResp = milvusClient.getCollectionStats(
+                    GetCollectionStatsReq.builder()
+                            .collectionName(collectionName)
                             .build());
-            return Map.of(
-                    "collection", "documents",
-                    "status", "ACTIVE",
-                    "vectorDimension", 1024,
-                    "indexType", "HNSW",
-                    "totalShards", desc.getShardsNum()
-            );
+            long rowCount = statsResp.getNumOfEntities();
+            return ApiResponse.ok(new StatsResult(
+                    collectionName, "ACTIVE", rowCount, rowCount, dimension, indexType));
         } catch (Exception e) {
-            return Map.of(
-                    "collection", "documents",
-                    "status", "DISCONNECTED",
-                    "error", e.getMessage()
-            );
+            return ApiResponse.ok(new StatsResult(
+                    collectionName, "DISCONNECTED", 0, 0, dimension, indexType));
         }
     }
 }

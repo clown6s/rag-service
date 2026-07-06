@@ -4,6 +4,7 @@ import dev.langchain4j.data.segment.TextSegment;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
@@ -20,7 +21,7 @@ import java.util.stream.Collectors;
 @Component
 public class Reranker {
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
 
     @Value("${rag.rerank.api-url}")
     private String apiUrl;
@@ -33,6 +34,13 @@ public class Reranker {
 
     @Value("${langchain4j.embedding.api-key}")
     private String apiKey;
+
+    public Reranker() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);  // 10s 连接超时
+        factory.setReadTimeout(30_000);     // 30s 读取超时
+        this.restTemplate = new RestTemplate(factory);
+    }
 
     /**
      * 对候选片段重排
@@ -73,19 +81,28 @@ public class Reranker {
             List<Map<String, Object>> results =
                     (List<Map<String, Object>>) Objects.requireNonNull(resp.getBody()).get("results");
 
+            if (results == null) {
+                log.warn("[Rerank] 响应中无 results 字段");
+                return candidates.stream().limit(finalK).collect(Collectors.toList());
+            }
+
             return results.stream()
+                    .filter(r -> r.get("relevance_score") instanceof Number
+                              && r.get("index") instanceof Number)
                     .sorted((a, b) -> Double.compare(
                             ((Number) b.get("relevance_score")).doubleValue(),
                             ((Number) a.get("relevance_score")).doubleValue()))
                     .limit(finalK)
                     .map(r -> {
                         int idx = ((Number) r.get("index")).intValue();
+                        if (idx < 0 || idx >= candidates.size()) return null;
                         TextSegment seg = candidates.get(idx);
                         log.debug("[Rerank] idx={} score={} source={}",
                                 idx, r.get("relevance_score"),
                                 seg.metadata().getString("source"));
                         return seg;
                     })
+                    .filter(Objects::nonNull)
                     .collect(Collectors.toList());
         } catch (Exception e) {
             log.warn("[Rerank] API调用失败，返回原始Top-{}: {}", finalK, e.getMessage());

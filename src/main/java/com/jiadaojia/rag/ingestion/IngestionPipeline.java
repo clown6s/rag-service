@@ -4,8 +4,8 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.store.embedding.milvus.MilvusEmbeddingStore;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -19,13 +19,23 @@ import java.util.UUID;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class IngestionPipeline {
 
     private final DocumentParser parser;
     private final ContextualChunker chunker;
     private final EmbeddingModel embeddingModel;
     private final MilvusEmbeddingStore embeddingStore;
+
+    public IngestionPipeline(
+            DocumentParser parser,
+            ContextualChunker chunker,
+            EmbeddingModel embeddingModel,
+            @Lazy MilvusEmbeddingStore embeddingStore) {
+        this.parser = parser;
+        this.chunker = chunker;
+        this.embeddingModel = embeddingModel;
+        this.embeddingStore = embeddingStore;
+    }
 
     /**
      * 完整摄入流程

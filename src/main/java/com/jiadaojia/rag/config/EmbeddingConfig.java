@@ -25,12 +25,16 @@ public class EmbeddingConfig {
     @Value("${langchain4j.embedding.model}")
     private String modelName;
 
+    @Value("${langchain4j.embedding.dimension}")
+    private int dimension;
+
     @Bean
     public EmbeddingModel embeddingModel() {
         return OpenAiEmbeddingModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
                 .modelName(modelName)
+                .dimensions(dimension)
                 .timeout(Duration.ofSeconds(30))
                 .maxRetries(3)
                 .build();

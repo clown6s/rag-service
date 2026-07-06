@@ -6,8 +6,9 @@ import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.data.message.AiMessage;
+import jakarta.annotation.PreDestroy;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
@@ -19,6 +20,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * RAG 对话 API
@@ -29,35 +31,60 @@ import java.util.concurrent.Executors;
 @Slf4j
 @RestController
 @RequestMapping("/api/rag")
-@RequiredArgsConstructor
 public class RagChatController {
 
     private final RetrievalPipeline retrievalPipeline;
     private final ChatLanguageModel chatModel;
     private final StreamingChatLanguageModel streamingChatModel;
 
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final ExecutorService executor = Executors.newFixedThreadPool(16);
+
+    public RagChatController(
+            RetrievalPipeline retrievalPipeline,
+            @Qualifier("chatModel") ChatLanguageModel chatModel,
+            @Qualifier("streamingChatModel") StreamingChatLanguageModel streamingChatModel) {
+        this.retrievalPipeline = retrievalPipeline;
+        this.chatModel = chatModel;
+        this.streamingChatModel = streamingChatModel;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        log.info("[SSE] 关闭线程池...");
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 
     // ==================== 普通对话 ====================
 
     @PostMapping("/chat")
-    public ResponseEntity<ChatResponse> chat(@RequestBody ChatRequest req) {
-        // 检索
-        var result = retrievalPipeline.execute(req.query(), null);
-        String context = retrievalPipeline.buildContext(result, 3000);
+    public ApiResponse<ChatResponse> chat(@Valid @RequestBody ChatRequest req) {
+        try {
+            var result = retrievalPipeline.execute(req.query(), null);
+            String context = retrievalPipeline.buildContext(result, 3000);
 
-        // 生成
-        String prompt = buildPrompt(context, req.query());
-        String answer = chatModel.generate(prompt);
+            String prompt = buildPrompt(context, req.query());
+            String answer = chatModel.generate(prompt);
 
-        return ResponseEntity.ok(new ChatResponse(answer, result.getSources()));
+            return ApiResponse.ok(new ChatResponse(answer, result.getSources()));
+        } catch (Exception e) {
+            log.error("[对话] 失败 query={}", req.query(), e);
+            return ApiResponse.fail("处理失败: " + e.getMessage());
+        }
     }
 
     // ==================== SSE 流式对话 ====================
 
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter chatStream(@RequestBody ChatRequest req) {
-        SseEmitter emitter = new SseEmitter(300_000L); // 5分钟超时
+    public SseEmitter chatStream(@Valid @RequestBody ChatRequest req) {
+        SseEmitter emitter = new SseEmitter(300_000L);
 
         executor.execute(() -> {
             try {
@@ -99,18 +126,34 @@ public class RagChatController {
                     @Override
                     public void onError(Throwable t) {
                         log.error("[SSE] 生成失败", t);
-                        emitter.completeWithError(t);
+                        try {
+                            emitter.send(SseEmitter.event()
+                                    .name("error")
+                                    .data("生成失败: " + t.getMessage()));
+                            emitter.complete();
+                        } catch (IOException ignored) {
+                            emitter.completeWithError(t);
+                        }
                     }
                 });
             } catch (Exception e) {
                 log.error("[SSE] 检索失败", e);
-                emitter.completeWithError(e);
+                try {
+                    emitter.send(SseEmitter.event()
+                            .name("error")
+                            .data("检索失败: " + e.getMessage()));
+                    emitter.complete();
+                } catch (IOException ignored) {
+                    emitter.completeWithError(e);
+                }
             }
         });
 
-        // 客户端断开时清理
         emitter.onCompletion(() -> log.debug("[SSE] 客户端断开"));
-        emitter.onTimeout(() -> log.debug("[SSE] 超时"));
+        emitter.onTimeout(() -> {
+            log.debug("[SSE] 超时");
+            emitter.complete();
+        });
 
         return emitter;
     }

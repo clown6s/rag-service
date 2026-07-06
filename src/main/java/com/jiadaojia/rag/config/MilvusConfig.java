@@ -6,6 +6,7 @@ import io.milvus.v2.client.MilvusClientV2;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 
 /**
  * Milvus 向量数据库配置
@@ -31,6 +32,7 @@ public class MilvusConfig {
     private int dimension;
 
     @Bean
+    @Lazy
     public MilvusEmbeddingStore milvusEmbeddingStore() {
         return MilvusEmbeddingStore.builder()
                 .host(host)
@@ -42,6 +44,7 @@ public class MilvusConfig {
     }
 
     @Bean
+    @Lazy
     public MilvusClientV2 milvusClient() {
         ConnectConfig config = ConnectConfig.builder()
                 .uri("http://" + host + ":" + port)

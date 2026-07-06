@@ -7,8 +7,8 @@ import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.milvus.MilvusEmbeddingStore;
 import dev.langchain4j.store.embedding.filter.Filter;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -22,11 +22,17 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class HybridRetriever {
 
     private final MilvusEmbeddingStore embeddingStore;
     private final EmbeddingModel embeddingModel;
+
+    public HybridRetriever(
+            @Lazy MilvusEmbeddingStore embeddingStore,
+            EmbeddingModel embeddingModel) {
+        this.embeddingStore = embeddingStore;
+        this.embeddingModel = embeddingModel;
+    }
 
     /** RRF 融合参数 k（控制排名权重衰减速度） */
     private static final int RRF_K = 60;
@@ -84,7 +90,8 @@ public class HybridRetriever {
      * RRF (Reciprocal Rank Fusion) 融合
      * score = Σ 1/(k + rank_i)
      *
-     * 优点：不需要分数归一化，对两路检索的分数尺度差异鲁棒
+     * 用 chunk 文本内容哈希做去重 key（而非 document_id），
+     * 保证同文档的多个 chunk 都能保留。
      */
     private List<TextSegment> rrfFusion(
             List<EmbeddingMatch<TextSegment>> vectorResults,
@@ -97,21 +104,17 @@ public class HybridRetriever {
         // 向量路排名贡献
         for (int i = 0; i < vectorResults.size(); i++) {
             TextSegment seg = vectorResults.get(i).embedded();
-            String id = seg.metadata().getString("document_id");
-            if (id != null) {
-                rrfScores.merge(id, 1.0 / (RRF_K + i + 1), Double::sum);
-                segmentMap.putIfAbsent(id, seg);
-            }
+            String id = chunkKey(seg);
+            rrfScores.merge(id, 1.0 / (RRF_K + i + 1), Double::sum);
+            segmentMap.putIfAbsent(id, seg);
         }
 
         // BM25 路排名贡献
         for (int i = 0; i < bm25Results.size(); i++) {
             TextSegment seg = bm25Results.get(i).embedded();
-            String id = seg.metadata().getString("document_id");
-            if (id != null) {
-                rrfScores.merge(id, 1.0 / (RRF_K + i + 1), Double::sum);
-                segmentMap.putIfAbsent(id, seg);
-            }
+            String id = chunkKey(seg);
+            rrfScores.merge(id, 1.0 / (RRF_K + i + 1), Double::sum);
+            segmentMap.putIfAbsent(id, seg);
         }
 
         // 降序排列
@@ -120,5 +123,10 @@ public class HybridRetriever {
                 .limit(topK)
                 .map(e -> segmentMap.get(e.getKey()))
                 .collect(Collectors.toList());
+    }
+
+    /** 用文本内容哈希作为 chunk 唯一标识，同文档不同 chunk 不会合并 */
+    private String chunkKey(TextSegment seg) {
+        return Integer.toHexString(seg.text().hashCode());
     }
 }
