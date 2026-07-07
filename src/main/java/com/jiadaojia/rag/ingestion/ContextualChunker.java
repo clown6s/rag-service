@@ -3,9 +3,7 @@ package com.jiadaojia.rag.ingestion;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.input.Prompt;
-import dev.langchain4j.model.input.PromptTemplate;
+import dev.langchain4j.model.chat.ChatModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -13,7 +11,6 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 上下文增强切分器 — Contextual Retrieval 核心实现
@@ -29,12 +26,12 @@ import java.util.Map;
 @Component
 public class ContextualChunker {
 
-    private final ChatLanguageModel chatModel;
+    private final ChatModel chatModel;
     private final int maxSegmentSize;
     private final int overlapSize;
 
     public ContextualChunker(
-            @Qualifier("contextualChatModel") ChatLanguageModel chatModel,
+            @Qualifier("contextualChatModel") ChatModel chatModel,
             @Value("${rag.chunking.max-segment-size}") int maxSegmentSize,
             @Value("${rag.chunking.overlap-size}") int overlapSize) {
         this.chatModel = chatModel;
@@ -97,17 +94,16 @@ public class ContextualChunker {
                 ? rawText.substring(0, 3000)
                 : rawText;
 
-        Prompt prompt = PromptTemplate.from("""
+        String prompt = """
                 你是一个文档摘要生成器。阅读以下文档内容，用一句话（不超过50字）描述文档的主题和核心内容。
                 不要添加任何前缀或解释。
 
-                文件名: {{fileName}}
+                文件名: %s
                 内容:
-                {{content}}
-                """)
-                .apply(Map.of("fileName", fileName, "content", preview));
+                %s
+                """.formatted(fileName, preview);
 
-        return chatModel.generate(prompt.text()).trim();
+        return chatModel.chat(prompt).trim();
     }
 
     /**

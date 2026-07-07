@@ -54,7 +54,7 @@ public class KnowledgeBaseController {
         try {
             DeleteResp resp = milvusClient.delete(DeleteReq.builder()
                     .collectionName(collectionName)
-                    .filter("metadata like '%\"document_id\":\"" + docId + "\"%'")
+                    .filter("document_id == \"" + docId + "\"")
                     .build());
             long deleted = resp.getDeleteCnt();
             log.info("[管理] 删除文档 docId={} 删除chunks={}", docId, deleted);

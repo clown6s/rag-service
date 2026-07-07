@@ -1,11 +1,15 @@
 package com.jiadaojia.rag.ingestion;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.jiadaojia.rag.config.MilvusConfig;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
-import dev.langchain4j.store.embedding.milvus.MilvusEmbeddingStore;
+import io.milvus.v2.client.MilvusClientV2;
+import io.milvus.v2.service.vector.request.InsertReq;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.annotation.Lazy;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -15,11 +19,10 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 文档摄入流水线
+ * 文档摄入流水线（P1-13 重构：原生 MilvusClientV2 insert，sparse_bm25 由 Function 自动生成）
  *
- * 6步串联：上传 → 解析 → 上下文增强 → 切分 → 向量化 → 存储
- *
- * 状态追踪：内存 ConcurrentHashMap（重启丢失，后续可换 Redis/关系型DB 持久化）
+ * 6步：上传 → 解析 → 上下文增强 → 切分 → 向量化 → 存储
+ * 状态追踪：内存 ConcurrentHashMap（重启丢失）
  */
 @Slf4j
 @Component
@@ -28,26 +31,25 @@ public class IngestionPipeline {
     private final DocumentParser parser;
     private final ContextualChunker chunker;
     private final EmbeddingModel embeddingModel;
-    private final MilvusEmbeddingStore embeddingStore;
+    private final MilvusClientV2 milvusClient;
+    private final Gson gson = new Gson();
 
-    /** 摄入任务状态表（内存，重启丢失）。后续可换 Redis/关系型DB 持久化 */
+    @Value("${milvus.collection}")
+    private String collectionName;
+
     private final ConcurrentHashMap<String, IngestionStatus> statusMap = new ConcurrentHashMap<>();
 
     public IngestionPipeline(
             DocumentParser parser,
             ContextualChunker chunker,
             EmbeddingModel embeddingModel,
-            @Lazy MilvusEmbeddingStore embeddingStore) {
+            MilvusClientV2 milvusClient) {
         this.parser = parser;
         this.chunker = chunker;
         this.embeddingModel = embeddingModel;
-        this.embeddingStore = embeddingStore;
+        this.milvusClient = milvusClient;
     }
 
-    /**
-     * 完整摄入流程
-     * @return 文档 ID
-     */
     public String ingest(MultipartFile file, String title, String tags) {
         String docId = UUID.randomUUID().toString();
         String fileName = file.getOriginalFilename();
@@ -55,38 +57,37 @@ public class IngestionPipeline {
         updateStatus(docId, "PARSING", null, null);
 
         try {
-            // Step 1+2: 上传 + 解析（Tika 自动识别格式）
             String rawText = parser.parse(file);
             log.info("[摄入] 解析完成 docId={} textLen={}", docId, rawText.length());
             updateStatus(docId, "CHUNKING", null, null);
 
-            // 使用自定义 title 或文件名
             String docTitle = (title != null && !title.isBlank()) ? title : fileName;
-
-            // Step 3+4: Contextual Retrieval 上下文增强 + 递归切分
             List<TextSegment> chunks = chunker.chunk(rawText, docTitle);
             log.info("[摄入] 切分完成 docId={} chunks={}", docId, chunks.size());
 
-            // 注入文档级元数据
-            for (TextSegment seg : chunks) {
-                seg.metadata().put("document_id", docId);
-                seg.metadata().put("title", docTitle);
-                if (tags != null && !tags.isBlank()) {
-                    seg.metadata().put("tags", tags);
-                }
-            }
-
-            // Step 5: BGE-M3 批量向量化
             updateStatus(docId, "EMBEDDING", null, null);
             List<Embedding> embeddings = batchEmbed(chunks);
             log.info("[摄入] 向量化完成 docId={} vectors={}", docId, embeddings.size());
 
-            // Step 6: 分批存入 Milvus
+            // Step 6: 存入 Milvus（原生 insert，sparse_bm25 由 BM25 Function 自动从 text 生成）
             updateStatus(docId, "STORING", null, null);
-            int batchSize = 50;
-            for (int i = 0; i < embeddings.size(); i += batchSize) {
-                int end = Math.min(i + batchSize, embeddings.size());
-                embeddingStore.addAll(embeddings.subList(i, end), chunks.subList(i, end));
+            List<JsonObject> rows = new ArrayList<>();
+            for (int i = 0; i < chunks.size(); i++) {
+                JsonObject row = new JsonObject();
+                row.addProperty(MilvusConfig.FIELD_TEXT, chunks.get(i).text());
+                row.add(MilvusConfig.FIELD_DENSE, gson.toJsonTree(embeddings.get(i).vector()));
+                row.addProperty(MilvusConfig.FIELD_DOCUMENT_ID, docId);
+                row.addProperty(MilvusConfig.FIELD_TITLE, docTitle);
+                row.addProperty(MilvusConfig.FIELD_SOURCE, fileName);
+                rows.add(row);
+            }
+            int batchSize = 200;
+            for (int i = 0; i < rows.size(); i += batchSize) {
+                int end = Math.min(i + batchSize, rows.size());
+                milvusClient.insert(InsertReq.builder()
+                        .collectionName(collectionName)
+                        .data(rows.subList(i, end))
+                        .build());
             }
             log.info("[摄入] 存储完成 docId={} vectors={}", docId, embeddings.size());
 
@@ -99,9 +100,6 @@ public class IngestionPipeline {
         }
     }
 
-    /**
-     * 查询摄入状态（P1-07 修复：查询真实状态，不再恒返回 COMPLETED）
-     */
     public IngestionStatus getStatus(String docId) {
         IngestionStatus status = statusMap.get(docId);
         if (status == null) {
@@ -116,7 +114,6 @@ public class IngestionPipeline {
 
     public record IngestionStatus(String docId, String status, Integer totalChunks, String error) {}
 
-    /** 硅基流动 Embedding API 单次最多 32 条 */
     private static final int EMBED_BATCH_SIZE = 32;
 
     private List<Embedding> batchEmbed(List<TextSegment> chunks) {

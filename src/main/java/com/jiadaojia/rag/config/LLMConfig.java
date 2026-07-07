@@ -1,7 +1,7 @@
 package com.jiadaojia.rag.config;
 
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.chat.StreamingChatLanguageModel;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -29,7 +29,7 @@ public class LLMConfig {
 
     @Bean
     @Qualifier("chatModel")
-    public ChatLanguageModel chatModel(
+    public ChatModel chatModel(
             @Value("${langchain4j.open-ai.deepseek.chat-model.model-name}") String model,
             @Value("${langchain4j.open-ai.deepseek.chat-model.temperature}") double temperature,
             @Value("${langchain4j.open-ai.deepseek.chat-model.max-tokens}") int maxTokens,
@@ -46,7 +46,7 @@ public class LLMConfig {
 
     @Bean
     @Qualifier("streamingChatModel")
-    public StreamingChatLanguageModel streamingChatModel(
+    public StreamingChatModel streamingChatModel(
             @Value("${langchain4j.open-ai.deepseek.chat-model.model-name}") String model,
             @Value("${langchain4j.open-ai.deepseek.chat-model.temperature}") double temperature,
             @Value("${langchain4j.open-ai.deepseek.chat-model.max-tokens}") int maxTokens,
@@ -65,7 +65,7 @@ public class LLMConfig {
 
     @Bean
     @Qualifier("reasonerModel")
-    public ChatLanguageModel reasonerModel(
+    public ChatModel reasonerModel(
             @Value("${langchain4j.open-ai.deepseek.reasoner.model-name}") String model,
             @Value("${langchain4j.open-ai.deepseek.reasoner.temperature}") double temperature,
             @Value("${langchain4j.open-ai.deepseek.reasoner.max-tokens}") int maxTokens,
@@ -85,7 +85,7 @@ public class LLMConfig {
      */
     @Bean
     @Qualifier("contextualChatModel")
-    public ChatLanguageModel contextualChatModel() {
+    public ChatModel contextualChatModel() {
         return OpenAiChatModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)

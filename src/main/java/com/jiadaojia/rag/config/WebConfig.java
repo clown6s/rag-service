@@ -11,9 +11,7 @@ import org.springframework.web.filter.CorsFilter;
 import java.util.Arrays;
 
 /**
- * CORS 配置（P2-18）
  * 用 CorsFilter Bean（order=0 最早执行）确保对所有请求（含 SSE）可靠生效。
- *
  * 用 allowedOriginPatterns 而非 allowedOrigins：
  * - allowedOriginPatterns("*") 兼容 allowCredentials=true（allowedOrigins("*") 不兼容）
  * - dev 默认 * 放行所有 origin，生产改为具体域名

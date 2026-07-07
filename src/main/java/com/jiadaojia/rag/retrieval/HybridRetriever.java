@@ -1,132 +1,108 @@
 package com.jiadaojia.rag.retrieval;
 
+import com.jiadaojia.rag.config.MilvusConfig;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
-import dev.langchain4j.store.embedding.EmbeddingMatch;
-import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
-import dev.langchain4j.store.embedding.milvus.MilvusEmbeddingStore;
-import dev.langchain4j.store.embedding.filter.Filter;
+import io.milvus.v2.client.MilvusClientV2;
+import io.milvus.v2.service.vector.request.AnnSearchReq;
+import io.milvus.v2.service.vector.request.HybridSearchReq;
+import io.milvus.v2.service.vector.request.data.EmbeddedText;
+import io.milvus.v2.service.vector.request.data.FloatVec;
+import io.milvus.v2.service.vector.request.ranker.RRFRanker;
+import io.milvus.v2.service.vector.response.SearchResp;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.annotation.Lazy;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 /**
- * 混合检索器：向量 ANN + BM25 关键词 → RRF 融合
+ * 混合检索器（P1-08 实现：向量 ANN + BM25 全文检索 → RRF 融合）
  *
- * Milvus 2.5 原生支持 BM25 全文索引，通过标量过滤实现关键词检索。
- * 双路并行检索后 RRF 融合排序。
+ * Milvus 2.5 原生 hybridSearch（v2.5.x API）：
+ * - 路1 dense: FloatVec 向量 ANN
+ * - 路2 sparse: EmbeddedText 查询文本，Milvus 内部 BM25 Function 自动分词+生成稀疏向量
+ * - RRFRanker 融合两路结果（new RRFRanker(k)）
+ *
+ * v2.5.x API 要点：.ranker() 非 .functionScore()，.topK() 非 .limit()，.outFields() 非 .outputFields()
  */
 @Slf4j
 @Component
 public class HybridRetriever {
 
-    private final MilvusEmbeddingStore embeddingStore;
+    private final MilvusClientV2 milvusClient;
     private final EmbeddingModel embeddingModel;
 
-    public HybridRetriever(
-            @Lazy MilvusEmbeddingStore embeddingStore,
-            EmbeddingModel embeddingModel) {
-        this.embeddingStore = embeddingStore;
+    @Value("${milvus.collection}")
+    private String collectionName;
+
+    public HybridRetriever(MilvusClientV2 milvusClient, EmbeddingModel embeddingModel) {
+        this.milvusClient = milvusClient;
         this.embeddingModel = embeddingModel;
     }
 
-    /** RRF 融合参数 k（控制排名权重衰减速度） */
-    private static final int RRF_K = 60;
-
     /**
      * 混合检索入口
-     * @param query          原始查询
-     * @param keywords       BM25 关键词（由 QueryRewriter 提取）
+     * @param query          原始查询文本
+     * @param keywords       BM25 关键词（由 QueryRewriter 提取，当前直接用 query 走全文检索）
      * @param topK           最终返回数
-     * @param metadataFilter 元数据过滤（如 category=售后）
+     * @param metadataFilter 元数据过滤（当前未用，预留）
      */
     public List<TextSegment> search(String query, List<String> keywords,
-                                     int topK, Filter metadataFilter) {
+                                     int topK, dev.langchain4j.store.embedding.filter.Filter metadataFilter) {
+        try {
+            // 向量化查询
+            Embedding queryEmbedding = embeddingModel.embed(query).content();
 
-        // 路1: 向量检索
-        Embedding queryEmbedding = embeddingModel.embed(query).content();
-        EmbeddingSearchRequest vectorReq = EmbeddingSearchRequest.builder()
-                .queryEmbedding(queryEmbedding)
-                .maxResults(topK * 2)
-                .minScore(0.5)
-                .filter(metadataFilter)
-                .build();
-        List<EmbeddingMatch<TextSegment>> vectorResults =
-                embeddingStore.search(vectorReq).matches();
+            // 路1: dense 向量检索（.topK 非 .limit）
+            AnnSearchReq denseReq = AnnSearchReq.builder()
+                    .vectorFieldName(MilvusConfig.FIELD_DENSE)
+                    .vectors(List.of(new FloatVec(queryEmbedding.vector())))
+                    .params("{\"ef\": 64}")
+                    .topK(topK * 2)
+                    .build();
 
-        // 路2: BM25 关键词检索
-        List<EmbeddingMatch<TextSegment>> bm25Results = Collections.emptyList();
-        if (keywords != null && !keywords.isEmpty()) {
-            bm25Results = searchByKeywords(keywords, topK * 2, metadataFilter);
+            // 路2: BM25 全文检索（EmbeddedText 传查询文本，Milvus 内部自动分词+BM25）
+            AnnSearchReq sparseReq = AnnSearchReq.builder()
+                    .vectorFieldName(MilvusConfig.FIELD_SPARSE)
+                    .vectors(List.of(new EmbeddedText(query)))
+                    .topK(topK * 2)
+                    .build();
+
+            // RRF 融合（v2.5.x：.ranker(new RRFRanker(k)) 非 .functionScore()）
+            HybridSearchReq hybridReq = HybridSearchReq.builder()
+                    .collectionName(collectionName)
+                    .searchRequests(List.of(denseReq, sparseReq))
+                    .ranker(new RRFRanker(60))
+                    .topK(topK)
+                    .outFields(List.of(MilvusConfig.FIELD_TEXT, MilvusConfig.FIELD_SOURCE))
+                    .build();
+
+            SearchResp resp = milvusClient.hybridSearch(hybridReq);
+            List<List<SearchResp.SearchResult>> results = resp.getSearchResults();
+
+            // 转为 TextSegment
+            List<TextSegment> segments = new ArrayList<>();
+            if (results != null && !results.isEmpty()) {
+                for (SearchResp.SearchResult r : results.get(0)) {
+                    Map<String, Object> entity = r.getEntity();
+                    Object textVal = entity.get(MilvusConfig.FIELD_TEXT);
+                    if (textVal != null) {
+                        TextSegment seg = TextSegment.from(textVal.toString());
+                        Object sourceVal = entity.get(MilvusConfig.FIELD_SOURCE);
+                        seg.metadata().put("source", sourceVal != null ? sourceVal.toString() : "未知");
+                        segments.add(seg);
+                    }
+                }
+            }
+            log.info("[混合检索] dense+sparse BM25 RRF融合={} 条", segments.size());
+            return segments;
+        } catch (Exception e) {
+            log.error("[混合检索] 失败，降级返回空: {}", e.getMessage(), e);
+            return List.of();
         }
-
-        // 融合
-        List<TextSegment> fused = rrfFusion(vectorResults, bm25Results, topK);
-        log.info("[混合检索] 向量={} BM25={} 融合={}",
-                vectorResults.size(),
-                bm25Results.size(),
-                fused.size());
-        return fused;
-    }
-
-    /**
-     * 关键词检索 — TODO: 通过 Milvus 原生 SDK 走 BM25 全文索引
-     * 当前返回空列表，RRF 融合仅使用向量检索结果
-     */
-    private List<EmbeddingMatch<TextSegment>> searchByKeywords(
-            List<String> keywords, int maxResults, Filter metadataFilter) {
-        // TODO: 使用 MilvusClientV2 原生 SDK 执行 BM25 全文检索
-        // String keywordExpr = keywords.stream()
-        //         .map(k -> "(text like '%" + k.replace("'", "''") + "%')")
-        //         .collect(Collectors.joining(" or "));
-        return Collections.emptyList();
-    }
-
-    /**
-     * RRF (Reciprocal Rank Fusion) 融合
-     * score = Σ 1/(k + rank_i)
-     *
-     * 用 chunk 文本内容哈希做去重 key（而非 document_id），
-     * 保证同文档的多个 chunk 都能保留。
-     */
-    private List<TextSegment> rrfFusion(
-            List<EmbeddingMatch<TextSegment>> vectorResults,
-            List<EmbeddingMatch<TextSegment>> bm25Results,
-            int topK) {
-
-        Map<String, Double> rrfScores = new LinkedHashMap<>();
-        Map<String, TextSegment> segmentMap = new LinkedHashMap<>();
-
-        // 向量路排名贡献
-        for (int i = 0; i < vectorResults.size(); i++) {
-            TextSegment seg = vectorResults.get(i).embedded();
-            String id = chunkKey(seg);
-            rrfScores.merge(id, 1.0 / (RRF_K + i + 1), Double::sum);
-            segmentMap.putIfAbsent(id, seg);
-        }
-
-        // BM25 路排名贡献
-        for (int i = 0; i < bm25Results.size(); i++) {
-            TextSegment seg = bm25Results.get(i).embedded();
-            String id = chunkKey(seg);
-            rrfScores.merge(id, 1.0 / (RRF_K + i + 1), Double::sum);
-            segmentMap.putIfAbsent(id, seg);
-        }
-
-        // 降序排列
-        return rrfScores.entrySet().stream()
-                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
-                .limit(topK)
-                .map(e -> segmentMap.get(e.getKey()))
-                .collect(Collectors.toList());
-    }
-
-    /** 用文本内容哈希作为 chunk 唯一标识，同文档不同 chunk 不会合并 */
-    private String chunkKey(TextSegment seg) {
-        return Integer.toHexString(seg.text().hashCode());
     }
 }

@@ -50,7 +50,7 @@ langchain4j:
 milvus:
   host: ${MILVUS_HOST:127.0.0.1}
   port: ${MILVUS_PORT:19530}
-  database: default
+  database: rag_service
   collection: documents
   dimension: 1024
   index-type: HNSW

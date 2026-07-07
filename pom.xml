@@ -19,8 +19,9 @@
 
     <properties>
         <java.version>21</java.version>
-        <langchain4j.version>0.36.2</langchain4j.version>
-        <milvus-sdk.version>2.5.5</milvus-sdk.version>
+        <langchain4j.version>1.17.2</langchain4j.version>
+        <langchain4j-beta.version>1.17.2-beta27</langchain4j-beta.version>
+        <milvus-sdk.version>2.5.8</milvus-sdk.version>
         <tika.version>3.1.0</tika.version>
     </properties>
 
@@ -53,7 +54,7 @@
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-milvus</artifactId>
-            <version>${langchain4j.version}</version>
+            <version>${langchain4j-beta.version}</version>
         </dependency>
 
         <!-- Milvus SDK (原生调用，用于混合检索/管理操作) -->

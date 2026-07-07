@@ -1,6 +1,6 @@
 package com.jiadaojia.rag.retrieval;
 
-import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
@@ -16,16 +16,16 @@ import java.util.List;
  *
  * 策略1: Multi-Query — 生成多个角度查询，提高召回覆盖率
  * 策略2: 关键词提取 — 用于 BM25 精确匹配
- */
+ **/
 @Slf4j
 @Component
 public class QueryRewriter {
 
     private final RewriterService rewriter;
 
-    public QueryRewriter(@Qualifier("chatModel") ChatLanguageModel chatModel) {
+    public QueryRewriter(@Qualifier("chatModel") ChatModel chatModel) {
         this.rewriter = AiServices.builder(RewriterService.class)
-                .chatLanguageModel(chatModel)
+                .chatModel(chatModel)
                 .build();
     }
 
