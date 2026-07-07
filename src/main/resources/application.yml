@@ -4,6 +4,11 @@ server:
 spring:
   application:
     name: rag-service
+  config:
+    # 加载项目根目录 .env 文件（本地开发用，生产用系统环境变量）
+    # optional: 文件不存在不报错；[.properties] 按 properties 格式解析（.env 的 KEY=VALUE 兼容）
+    # 解决 spring-dotenv 未可靠注入环境变量导致占位符解析失败的问题
+    import: "optional:file:.env[.properties]"
   servlet:
     multipart:
       max-file-size: 20MB
@@ -16,7 +21,8 @@ langchain4j:
   open-ai:
     # DeepSeek V3 — 主力对话 + Prompt改写 + 摘要
     deepseek:
-      api-key: ${DEEPSEEK_API_KEY:sk-deepseek-placeholder}
+      # 密钥必须由环境变量注入，无默认值（未配置即启动失败，避免硬编码泄露）
+      api-key: ${DEEPSEEK_API_KEY}
       base-url: https://api.deepseek.com/v1
       chat-model:
         model-name: deepseek-chat
@@ -34,7 +40,7 @@ langchain4j:
   embedding:
     # BGE-M3 (可通过硅基流动 API 或本地部署)
     base-url: https://api.siliconflow.cn/v1
-    api-key: ${SILICONFLOW_API_KEY:sk-siliconflow-placeholder}
+    api-key: ${SILICONFLOW_API_KEY}
     model: BAAI/bge-m3
     dimension: 1024
 
@@ -42,15 +48,18 @@ langchain4j:
 # Milvus 向量数据库
 # ============================================================
 milvus:
-  host: ${MILVUS_HOST:10.211.55.30}
+  host: ${MILVUS_HOST:127.0.0.1}
   port: ${MILVUS_PORT:19530}
-  database: rag_knowledge
+  database: default
   collection: documents
   dimension: 1024
   index-type: HNSW
   metric-type: COSINE
   # Milvus 2.5 原生 BM25 全文索引
   enable-fulltext: true
+  # Milvus 鉴权（生产必须开启）
+  username: ${MILVUS_USERNAME:}
+  password: ${MILVUS_PASSWORD:}
 
 # ============================================================
 # RAG 参数
@@ -65,11 +74,10 @@ rag:
     bm25-weight: 0.3
     vector-weight: 0.7
   rerank:
-    model: bge-reranker-v2-m3
+    model: BAAI/bge-reranker-v2-m3
     api-url: https://api.siliconflow.cn/v1/rerank
   rewrite:
     multi-query-count: 3
   upload:
     max-file-size: 20MB
     allowed-types: pdf,docx,doc,md,txt,html
-

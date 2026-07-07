@@ -11,7 +11,6 @@ import java.time.Duration;
 /**
  * Embedding 模型配置 — BGE-M3
  * 1024维，中文SOTA，8192 token上下文
- * 托管方式：硅基流动 API 或本地部署
  */
 @Configuration
 public class EmbeddingConfig {
@@ -34,7 +33,6 @@ public class EmbeddingConfig {
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
                 .modelName(modelName)
-                .dimensions(dimension)
                 .timeout(Duration.ofSeconds(30))
                 .maxRetries(3)
                 .build();

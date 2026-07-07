@@ -1,0 +1,25 @@
+# ============================================================
+# 生产环境配置（所有敏感值强制环境变量，无默认值，未配置即启动失败）
+# 启动：--spring.profiles.active=prod 或 SPRING_PROFILES_ACTIVE=prod
+# ============================================================
+milvus:
+  # 生产 Milvus 地址必须显式配置
+  host: ${MILVUS_HOST}
+  port: ${MILVUS_PORT:19530}
+  # 生产必须启用 RBAC 鉴权
+  username: ${MILVUS_USERNAME}
+  password: ${MILVUS_PASSWORD}
+
+# 生产日志精简
+logging:
+  level:
+    com.jiadaojia.rag: INFO
+    dev.langchain4j: WARN
+    root: WARN
+
+# 生产关闭 actuator 敏感端点（若引入 actuator）
+# management:
+#   endpoints:
+#     web:
+#       exposure:
+#         include: health,info

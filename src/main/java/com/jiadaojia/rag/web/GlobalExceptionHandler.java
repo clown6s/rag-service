@@ -48,8 +48,9 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleGeneric(Exception e) {
-        log.error("[异常] 未预期错误", e);
+        String traceId = java.util.UUID.randomUUID().toString().substring(0, 8);
+        log.error("[异常] 未预期错误 traceId={}", traceId, e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(ApiResponse.fail("服务器内部错误: " + e.getMessage()));
+                .body(ApiResponse.fail("服务器内部错误 (traceId=" + traceId + ")"));
     }
 }

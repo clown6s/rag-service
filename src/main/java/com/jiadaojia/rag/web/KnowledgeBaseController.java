@@ -61,7 +61,7 @@ public class KnowledgeBaseController {
             return ApiResponse.ok(new DeleteResult(docId, deleted));
         } catch (Exception e) {
             log.error("[管理] 删除文档失败 docId={}", docId, e);
-            return ApiResponse.fail("删除失败: " + e.getMessage());
+            return ApiResponse.fail("删除失败，请联系管理员");
         }
     }
 
@@ -79,7 +79,7 @@ public class KnowledgeBaseController {
             return ApiResponse.ok(new ReindexResult("索引已清空，请重新摄入文档"));
         } catch (Exception e) {
             log.error("[管理] 清空索引失败", e);
-            return ApiResponse.fail("清空索引失败: " + e.getMessage());
+            return ApiResponse.fail("清空索引失败，请联系管理员");
         }
     }
 
@@ -94,9 +94,11 @@ public class KnowledgeBaseController {
                             .collectionName(collectionName)
                             .build());
             long rowCount = statsResp.getNumOfEntities();
+            log.info("[管理] 统计 collection={} rows={}", collectionName, rowCount);
             return ApiResponse.ok(new StatsResult(
                     collectionName, "ACTIVE", rowCount, rowCount, dimension, indexType));
         } catch (Exception e) {
+            log.warn("[管理] 统计失败: {}", e.getMessage());
             return ApiResponse.ok(new StatsResult(
                     collectionName, "DISCONNECTED", 0, 0, dimension, indexType));
         }

@@ -1,0 +1,17 @@
+# ============================================================
+# 开发环境配置（本地开发便捷默认值）
+# 启动：--spring.profiles.active=dev
+# ============================================================
+milvus:
+  # dev 用本地/内网 Milvus
+  host: 10.211.55.30
+  port: 19530
+  # dev 不强制鉴权，便于快速调试
+  username:
+  password:
+
+# dev 日志更详细
+logging:
+  level:
+    com.jiadaojia.rag: DEBUG
+    dev.langchain4j: DEBUG
