@@ -70,7 +70,6 @@ public class RagChatController {
     @PostMapping("/chat")
     public ApiResponse<ChatResponse> chat(@Valid @RequestBody ChatRequest req) {
         try {
-            // 多轮：拼接上文 user query 帮助检索召回（如"万佛洞"+"是那年建成的"→"万佛洞 是那年建成的"）
             String searchQuery = buildSearchQuery(req.query(), req.history());
             var result = retrievalPipeline.execute(searchQuery, null);
             String context = retrievalPipeline.buildContext(result, 3000);
