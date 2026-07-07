@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 混合检索器（P1-08 实现：向量 ANN + BM25 全文检索 → RRF 融合）
+ * 混合检索器（向量 ANN + BM25 全文检索 → RRF 融合）
  *
  * Milvus 2.5 原生 hybridSearch（v2.5.x API）：
  * - 路1 dense: FloatVec 向量 ANN

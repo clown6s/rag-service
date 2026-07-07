@@ -87,6 +87,7 @@ public class RetrievalPipeline {
             QueryRewriter.RewriteResult rewriteInfo) {
 
         public List<String> getSources() {
+            // 去重文件名列表（无编号），来源文件在回答下方单独展示
             return segments.stream()
                     .map(s -> s.metadata().getString("source"))
                     .filter(Objects::nonNull)
