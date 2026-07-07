@@ -1,0 +1,18 @@
+# .dockerignore — 排除不应进入 Docker 镜像的文件（P0-1）
+.env
+.env.*
+!.env.example
+.idea/
+.git/
+.gitignore
+target/
+*.iml
+*.log
+logs/
+uploads/
+tmp/
+docker-compose.yml
+docker-compose.override.yml
+Dockerfile
+.dockerignore
+README.md

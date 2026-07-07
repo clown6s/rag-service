@@ -1,8 +1,8 @@
 # RAG 服务 Dockerfile
 FROM eclipse-temurin:21-jre-alpine
 
-# 创建非 root 用户
-RUN addgroup -S app && adduser -S app -G app
+# 创建非 root 用户 + 安装 wget（P1-8: alpine 默认无 wget，HEALTHCHECK 需要）
+RUN addgroup -S app && adduser -S app -G app && apk add --no-cache wget
 
 WORKDIR /app
 

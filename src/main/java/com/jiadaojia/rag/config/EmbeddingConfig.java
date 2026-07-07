@@ -24,8 +24,6 @@ public class EmbeddingConfig {
     @Value("${langchain4j.embedding.model}")
     private String modelName;
 
-    @Value("${langchain4j.embedding.dimension}")
-    private int dimension;
 
     @Bean
     public EmbeddingModel embeddingModel() {

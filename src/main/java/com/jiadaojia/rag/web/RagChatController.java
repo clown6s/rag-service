@@ -19,7 +19,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -36,7 +37,10 @@ public class RagChatController {
     private final ChatModel chatModel;
     private final StreamingChatModel streamingChatModel;
 
-    private final ExecutorService executor = Executors.newFixedThreadPool(16);
+    private final ExecutorService executor = new ThreadPoolExecutor(
+            16, 16, 0L, TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<>(32),
+            new ThreadPoolExecutor.AbortPolicy());
 
     /** 多轮对话最多保留的历史条数（防 prompt 过长） */
     private static final int MAX_HISTORY = 6;

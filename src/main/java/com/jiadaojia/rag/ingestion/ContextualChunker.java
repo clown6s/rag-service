@@ -81,8 +81,7 @@ public class ContextualChunker {
         text = text.replaceAll("\\n{3,}", "\n\n");
 
         Document doc = Document.from(text);
-        // 递归切分：最大512字，overlap 50字
-        return new RecursiveSentenceSplitter(maxSegmentSize, overlapSize).split(doc);
+        return dev.langchain4j.data.document.splitter.DocumentSplitters.recursive(maxSegmentSize, overlapSize).split(doc);
     }
 
     /**

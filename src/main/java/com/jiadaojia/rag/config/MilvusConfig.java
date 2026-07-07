@@ -83,7 +83,7 @@ public class MilvusConfig {
      * 首次部署时若 collection 是旧 MilvusEmbeddingStore 建的简单 dense schema，
      * 需先通过 reindex API 或手动 drop 旧 collection 再启动，以重建为 BM25 schema
      */
-    private void ensureCollectionExists(MilvusClientV2 client) {
+    public void ensureCollectionExists(MilvusClientV2 client) {
         try {
             boolean exists = client.hasCollection(HasCollectionReq.builder()
                     .collectionName(collection).build());
@@ -144,7 +144,8 @@ public class MilvusConfig {
                     .build());
             log.info("[Milvus] 已创建 BM25 collection: {}", collection);
         } catch (Exception e) {
-            log.error("[Milvus] 建 collection 失败: {}", e.getMessage(), e);
+            log.error("[Milvus] 建 collection 失败", e);
+            throw new IllegalStateException("建 Milvus collection 失败: " + e.getMessage(), e);
         }
     }
 }

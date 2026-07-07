@@ -1,11 +1,14 @@
 package com.jiadaojia.rag.web;
 
+import com.jiadaojia.rag.config.MilvusConfig;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.collection.request.DropCollectionReq;
 import io.milvus.v2.service.collection.request.GetCollectionStatsReq;
 import io.milvus.v2.service.collection.response.GetCollectionStatsResp;
 import io.milvus.v2.service.vector.request.DeleteReq;
+import io.milvus.v2.service.vector.request.QueryReq;
 import io.milvus.v2.service.vector.response.DeleteResp;
+import io.milvus.v2.service.vector.response.QueryResp;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
@@ -24,9 +27,11 @@ import org.springframework.web.bind.annotation.*;
 public class KnowledgeBaseController {
 
     private final MilvusClientV2 milvusClient;
+    private final MilvusConfig milvusConfig;
 
-    public KnowledgeBaseController(@Lazy MilvusClientV2 milvusClient) {
+    public KnowledgeBaseController(@Lazy MilvusClientV2 milvusClient, MilvusConfig milvusConfig) {
         this.milvusClient = milvusClient;
+        this.milvusConfig = milvusConfig;
     }
 
     @Value("${milvus.collection}")
@@ -39,6 +44,33 @@ public class KnowledgeBaseController {
     private String indexType;
 
     public record DeleteResult(String docId, long chunksRemoved) {}
+
+    /** 文档信息（P2-24 列表持久化） */
+    public record DocumentInfo(String docId, String title) {}
+
+    /**
+     * 列出所有已摄入文档（按 document_id 去重，从 Milvus query 聚合）
+     */
+    @GetMapping("/documents")
+    public ApiResponse<java.util.List<DocumentInfo>> listDocuments() {
+        try {
+            QueryResp resp = milvusClient.query(QueryReq.builder()
+                    .collectionName(collectionName)
+                    .outputFields(java.util.List.of("document_id", "title"))
+                    .limit(1000)
+                    .build());
+            java.util.Map<String, DocumentInfo> docs = new java.util.LinkedHashMap<>();
+            for (QueryResp.QueryResult r : resp.getQueryResults()) {
+                String docId = (String) r.getEntity().get("document_id");
+                String title = (String) r.getEntity().get("title");
+                if (docId != null) docs.putIfAbsent(docId, new DocumentInfo(docId, title));
+            }
+            return ApiResponse.ok(new java.util.ArrayList<>(docs.values()));
+        } catch (Exception e) {
+            log.warn("[管理] 列出文档失败: {}", e.getMessage());
+            return ApiResponse.ok(java.util.List.of());
+        }
+    }
     public record ReindexResult(String status) {}
     public record StatsResult(String collection, String status, long totalDocuments,
                               long totalChunks, int vectorDimension, String indexType) {}
@@ -75,8 +107,9 @@ public class KnowledgeBaseController {
                     DropCollectionReq.builder()
                             .collectionName(collectionName)
                             .build());
-            log.info("[管理] 索引已清空");
-            return ApiResponse.ok(new ReindexResult("索引已清空，请重新摄入文档"));
+            log.info("[管理] 索引已清空，重建 BM25 collection...");
+            milvusConfig.ensureCollectionExists(milvusClient);
+            return ApiResponse.ok(new ReindexResult("索引已重建（BM25 schema），请重新摄入文档"));
         } catch (Exception e) {
             log.error("[管理] 清空索引失败", e);
             return ApiResponse.fail("清空索引失败，请联系管理员");

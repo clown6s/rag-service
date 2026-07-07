@@ -16,7 +16,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 文档摄入流水线（原生 MilvusClientV2 insert，sparse_bm25 由 Function 自动生成）
@@ -37,7 +36,13 @@ public class IngestionPipeline {
     @Value("${milvus.collection}")
     private String collectionName;
 
-    private final ConcurrentHashMap<String, IngestionStatus> statusMap = new ConcurrentHashMap<>();
+    private static final int MAX_STATUS = 1000;
+    private final java.util.Map<String, IngestionStatus> statusMap =
+            java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>(128, 0.75f, true) {
+                @Override protected boolean removeEldestEntry(java.util.Map.Entry<String, IngestionStatus> eldest) {
+                    return size() > MAX_STATUS;
+                }
+            });
 
     public IngestionPipeline(
             DocumentParser parser,

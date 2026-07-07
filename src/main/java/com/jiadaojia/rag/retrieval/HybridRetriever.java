@@ -101,8 +101,8 @@ public class HybridRetriever {
             log.info("[混合检索] dense+sparse BM25 RRF融合={} 条", segments.size());
             return segments;
         } catch (Exception e) {
-            log.error("[混合检索] 失败，降级返回空: {}", e.getMessage(), e);
-            return List.of();
+            log.error("[混合检索] 系统异常", e);
+            throw new RuntimeException("混合检索失败: " + e.getMessage(), e);
         }
     }
 }
