@@ -45,7 +45,6 @@ public class KnowledgeBaseController {
 
     public record DeleteResult(String docId, long chunksRemoved) {}
 
-    /** 文档信息（P2-24 列表持久化） */
     public record DocumentInfo(String docId, String title) {}
 
     /**
@@ -56,6 +55,7 @@ public class KnowledgeBaseController {
         try {
             QueryResp resp = milvusClient.query(QueryReq.builder()
                     .collectionName(collectionName)
+                    .filter("id >= 0")  // Milvus query 需要 filter，id>=0 获取所有行
                     .outputFields(java.util.List.of("document_id", "title"))
                     .limit(1000)
                     .build());

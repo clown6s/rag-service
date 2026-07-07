@@ -71,7 +71,7 @@ public class RetrievalPipeline {
             String source = seg.metadata().getString("source");
             String text = seg.text();
 
-            String entry = String.format("[来源%d: %s]\n%s\n\n", i + 1,
+            String entry = String.format("[来源: %s]\n%s\n\n",
                     source != null ? source : "未知", text);
 
             if (totalLen + entry.length() > maxChars) break;
@@ -86,8 +86,17 @@ public class RetrievalPipeline {
             List<TextSegment> segments,
             QueryRewriter.RewriteResult rewriteInfo) {
 
+        /** 返回去重文件名列表（用于 parseCitedSources 匹配 LLM 引用的文件名） */
+        public List<String> getIndexedSources() {
+            return segments.stream()
+                    .map(s -> s.metadata().getString("source"))
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .collect(Collectors.toList());
+        }
+
+        /** 去重文件名列表（fallback，未解析引用时用） */
         public List<String> getSources() {
-            // 去重文件名列表（无编号），来源文件在回答下方单独展示
             return segments.stream()
                     .map(s -> s.metadata().getString("source"))
                     .filter(Objects::nonNull)
