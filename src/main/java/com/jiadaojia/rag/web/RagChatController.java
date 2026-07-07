@@ -24,7 +24,6 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * RAG 对话 API（支持多轮对话：前端传 history，后端用上文改写检索 + 生成带上下文）
- *
  * POST /api/rag/chat         — 普通对话
  * POST /api/rag/chat/stream  — SSE 流式对话
  */
