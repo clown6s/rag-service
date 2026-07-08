@@ -14,7 +14,6 @@ import java.util.Set;
 
 /**
  * 文档摄入 API
- *
  * POST   /api/rag/documents/upload   — 上传文档
  * GET    /api/rag/documents/{docId}/status — 查询摄入状态
  */

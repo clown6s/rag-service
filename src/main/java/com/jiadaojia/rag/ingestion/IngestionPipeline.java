@@ -19,7 +19,6 @@ import java.util.UUID;
 
 /**
  * 文档摄入流水线（原生 MilvusClientV2 insert，sparse_bm25 由 Function 自动生成）
- *
  * 6步：上传 → 解析 → 上下文增强 → 切分 → 向量化 → 存储
  * 状态追踪：内存 ConcurrentHashMap（重启丢失）
  */

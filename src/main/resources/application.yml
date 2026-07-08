@@ -70,7 +70,7 @@ rag:
     overlap-size: 50
   retrieval:
     top-k: 20                 # 混合检索召回数
-    final-k: 10               # Rerank 后保留数（5→10，避免相关chunk被过滤）
+    final-k: 15               # Rerank 后保留数（10→15，让更多文档进入上下文）
     bm25-weight: 0.3
     vector-weight: 0.7
   rerank:
