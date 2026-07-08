@@ -47,35 +47,56 @@ public class HybridRetriever {
     /**
      * 混合检索入口
      * @param query          原始查询文本
-     * @param keywords       BM25 关键词（由 QueryRewriter 提取，当前直接用 query 走全文检索）
+     * @param expandedQuery  改写后的查询文本（短查询时用于加路检索，null 则只用原 query）
+     * @param keywords       BM25 关键词（由 QueryRewriter 提取）
      * @param topK           最终返回数
      * @param metadataFilter 元数据过滤（当前未用，预留）
      */
-    public List<TextSegment> search(String query, List<String> keywords,
+    public List<TextSegment> search(String query, String expandedQuery, List<String> keywords,
                                      int topK, dev.langchain4j.store.embedding.filter.Filter metadataFilter) {
         try {
-            // 向量化查询
-            Embedding queryEmbedding = embeddingModel.embed(query).content();
+            // ========== 路检索策略 ==========
 
-            // 路1: dense 向量检索（.topK 非 .limit）
-            AnnSearchReq denseReq = AnnSearchReq.builder()
+            // Dense 原query（始终启用，保证不丢原意图）
+            Embedding queryEmbedding = embeddingModel.embed(query).content();
+            AnnSearchReq denseOriginal = AnnSearchReq.builder()
                     .vectorFieldName(MilvusConfig.FIELD_DENSE)
                     .vectors(List.of(new FloatVec(queryEmbedding.vector())))
                     .params("{\"ef\": 64}")
                     .topK(topK * 2)
                     .build();
 
-            // 路2: BM25 全文检索（EmbeddedText 传查询文本，Milvus 内部自动分词+BM25）
+            // Dense expandedQuery（短查询≤4字时加路，语义扩展防单薄）
+            AnnSearchReq denseExpanded = null;
+            if (expandedQuery != null && !expandedQuery.isBlank() && !expandedQuery.equals(query)) {
+                Embedding expandedEmbedding = embeddingModel.embed(expandedQuery).content();
+                denseExpanded = AnnSearchReq.builder()
+                        .vectorFieldName(MilvusConfig.FIELD_DENSE)
+                        .vectors(List.of(new FloatVec(expandedEmbedding.vector())))
+                        .params("{\"ef\": 64}")
+                        .topK(topK * 2)
+                        .build();
+                log.info("[混合检索] 短查询加路: 原query={}, expandedQuery={}", query, expandedQuery);
+            }
+
+            // BM25 全文检索：短查询用 expandedQuery（更多关键词命中），长查询用原query
+            String bm25QueryText = (expandedQuery != null && !expandedQuery.isBlank())
+                    ? expandedQuery : query;
             AnnSearchReq sparseReq = AnnSearchReq.builder()
                     .vectorFieldName(MilvusConfig.FIELD_SPARSE)
-                    .vectors(List.of(new EmbeddedText(query)))
+                    .vectors(List.of(new EmbeddedText(bm25QueryText)))
                     .topK(topK * 2)
                     .build();
 
-            // RRF 融合（v2.5.x：.ranker(new RRFRanker(k)) 非 .functionScore()）
+            // 组合检索路（2路或3路）→ RRF 融合
+            List<AnnSearchReq> searchRequests = new ArrayList<>();
+            searchRequests.add(denseOriginal);
+            if (denseExpanded != null) searchRequests.add(denseExpanded);
+            searchRequests.add(sparseReq);
+
             HybridSearchReq hybridReq = HybridSearchReq.builder()
                     .collectionName(collectionName)
-                    .searchRequests(List.of(denseReq, sparseReq))
+                    .searchRequests(searchRequests)
                     .ranker(new RRFRanker(60))
                     .topK(topK)
                     .outFields(List.of(MilvusConfig.FIELD_TEXT, MilvusConfig.FIELD_SOURCE))
@@ -98,7 +119,7 @@ public class HybridRetriever {
                     }
                 }
             }
-            log.info("[混合检索] dense+sparse BM25 RRF融合={} 条", segments.size());
+            log.info("[混合检索] 路数={} dense+sparse BM25 RRF融合={} 条", searchRequests.size(), segments.size());
             return segments;
         } catch (Exception e) {
             log.error("[混合检索] 系统异常", e);

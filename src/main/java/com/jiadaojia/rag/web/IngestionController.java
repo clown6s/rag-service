@@ -72,7 +72,7 @@ public class IngestionController {
     }
 
     /**
-     * 文件校验：扩展名 + 真实 MIME 类型双重校验（P1-12 修复）
+     * 文件校验：扩展名 + 真实 MIME 类型双重校验
      * 防 evil.pdf 伪装攻击（Tika 历史有解析 RCE 漏洞 CVE-2022-30126 等）
      */
     private void validateFile(MultipartFile file) {

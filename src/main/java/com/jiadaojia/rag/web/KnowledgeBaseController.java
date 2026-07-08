@@ -14,6 +14,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 /**
  * 知识库管理 API
  *
@@ -136,4 +138,55 @@ public class KnowledgeBaseController {
                     collectionName, "DISCONNECTED", 0, 0, dimension, indexType));
         }
     }
+
+    /**
+     * 诊断接口：按关键词搜索 Milvus chunks，查看原始数据
+     * GET /api/rag/admin/debug/search?keyword=龙门&limit=10
+     * GET /api/rag/admin/debug/search?source=导游面试问答.doc&limit=50  (按文件名查所有chunk)
+     */
+    @GetMapping("/debug/search")
+    public ApiResponse<java.util.List<ChunkInfo>> debugSearch(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String source,
+            @RequestParam(defaultValue = "10") int limit) {
+        try {
+            String filter;
+            if (source != null && !source.isBlank()) {
+                // 按文件名查所有chunk（不用TEXT_MATCH，直接标量过滤）
+                filter = "source == \"" + source + "\"";
+            } else if (keyword != null && !keyword.isBlank()) {
+                filter = "TEXT_MATCH(text, '" + keyword + "')";
+            } else {
+                filter = "id >= 0";
+            }
+
+            QueryResp resp = milvusClient.query(QueryReq.builder()
+                    .collectionName(collectionName)
+                    .filter(filter)
+                    .outputFields(java.util.List.of("text", "source", "document_id", "title"))
+                    .limit(limit)
+                    .build());
+            java.util.List<ChunkInfo> chunks = new java.util.ArrayList<>();
+            for (QueryResp.QueryResult r : resp.getQueryResults()) {
+                Map<String, Object> entity = r.getEntity();
+                String text = (String) entity.get("text");
+                String src = (String) entity.get("source");
+                String docId = (String) entity.get("document_id");
+                String title = (String) entity.get("title");
+                // 截断过长内容，保留前300字方便查看关键词
+                String preview = text != null && text.length() > 300
+                        ? text.substring(0, 300) + "..." : text;
+                chunks.add(new ChunkInfo(docId, title, src, preview, text != null ? text.length() : 0));
+            }
+            log.info("[诊断] keyword={} source={} 找到 {} 条chunks", keyword, source, chunks.size());
+            return ApiResponse.ok(chunks);
+        } catch (Exception e) {
+            log.warn("[诊断] 搜索失败: {}", e.getMessage());
+            return ApiResponse.ok(java.util.List.of());
+        }
+    }
+
+    /** 诊断 chunk 信息 */
+    public record ChunkInfo(String docId, String title, String source, String preview, int fullLength) {}
+
 }

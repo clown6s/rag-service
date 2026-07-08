@@ -55,6 +55,11 @@ public class ContextualChunker {
         // Step 3: 递归切分（按句子边界，保持语义完整）
         List<TextSegment> segments = splitBySentence(enrichedText);
 
+        // 过滤空白 segment（RecursiveSentenceSplitter 可能产生纯空白片段，导致向量化报错）
+        segments = segments.stream()
+                .filter(s -> s.text() != null && !s.text().isBlank())
+                .toList();
+
         // Step 4: 注入元数据
         String now = LocalDateTime.now().toString();
         for (int i = 0; i < segments.size(); i++) {
@@ -80,12 +85,67 @@ public class ContextualChunker {
         // 预处理：合并多个换行
         text = text.replaceAll("\\n{3,}", "\n\n");
 
+        // 检测法律条款模式"第X条"——至少5条才按条款切分（避免Q&A文档误触发）
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("第[一二三四五六七八九十百千零\\d]+条");
+        java.util.regex.Matcher m = p.matcher(text);
+        int articleCount = 0;
+        while (m.find()) articleCount++;
+        if (articleCount >= 5) {
+            return splitByLegalArticle(text);
+        }
+
         Document doc = Document.from(text);
-        return dev.langchain4j.data.document.splitter.DocumentSplitters.recursive(maxSegmentSize, overlapSize).split(doc);
+        return new RecursiveSentenceSplitter(maxSegmentSize, overlapSize).split(doc);
+    }
+
+    /**
+     * 按法律条款"第X条"边界切分，每条独立 chunk
+     * 解决 BM25 分词"第五条"→"第五"+"条"误匹配"第五十四条"的问题
+     *
+     * 关键修复：第一个"第X条"之前的内容（如文档标题、景点知识等）也要保留为 chunk
+     */
+    private List<TextSegment> splitByLegalArticle(String text) {
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("第[一二三四五六七八九十百千零\\d]+条");
+        java.util.regex.Matcher m = p.matcher(text);
+        java.util.List<Integer> positions = new java.util.ArrayList<>();
+        while (m.find()) {
+            positions.add(m.start());
+        }
+        // 不足2条边界，回退常规切分
+        if (positions.size() < 2) {
+            Document doc = Document.from(text);
+            return new RecursiveSentenceSplitter(maxSegmentSize, overlapSize).split(doc);
+        }
+
+        java.util.List<TextSegment> segments = new java.util.ArrayList<>();
+
+        // 关键修复：第一个"第X条"之前的内容也要保留为 chunk（可能是景点知识、文档标题等）
+        String preArticleText = text.substring(0, positions.get(0)).trim();
+        if (!preArticleText.isEmpty()) {
+            Document preDoc = Document.from(preArticleText);
+            segments.addAll(new RecursiveSentenceSplitter(maxSegmentSize, overlapSize).split(preDoc));
+        }
+
+        // 按"第X条"边界切分
+        for (int i = 0; i < positions.size(); i++) {
+            int start = positions.get(i);
+            int end = (i + 1 < positions.size()) ? positions.get(i + 1) : text.length();
+            String chunk = text.substring(start, end).trim();
+            if (chunk.isEmpty()) continue;
+            // 单条超长再递归切
+            if (chunk.length() > maxSegmentSize) {
+                Document subDoc = Document.from(chunk);
+                segments.addAll(new RecursiveSentenceSplitter(maxSegmentSize, overlapSize).split(subDoc));
+            } else {
+                segments.add(TextSegment.from(chunk));
+            }
+        }
+        return segments;
     }
 
     /**
      * 用 LLM 生成文档摘要（轻量模型，成本极低）
+     * 失败时返回默认摘要，不阻断摄入流程
      */
     private String generateSummary(String rawText, String fileName) {
         // 取文档前段（3000字以内）给 LLM，省 token
@@ -102,7 +162,15 @@ public class ContextualChunker {
                 %s
                 """.formatted(fileName, preview);
 
-        return chatModel.chat(prompt).trim();
+        try {
+            String result = chatModel.chat(prompt);
+            if (result != null && !result.isBlank()) {
+                return result.trim();
+            }
+        } catch (Exception e) {
+            log.warn("[切分] LLM摘要生成失败，使用默认摘要: {}", e.getMessage());
+        }
+        return "文档: " + fileName;
     }
 
     /**
@@ -124,6 +192,10 @@ public class ContextualChunker {
         }
 
         private List<TextSegment> splitRecursive(String text, String[] seps, int depth, Metadata meta) {
+            // 空白文本不产生 segment（langchain4j 1.17.x TextSegment.from 对 blank 抛异常）
+            if (text == null || text.isBlank()) {
+                return List.of();
+            }
             if (text.length() <= maxSize) {
                 return List.of(TextSegment.from(text, meta.copy()));
             }
@@ -138,10 +210,13 @@ public class ContextualChunker {
             StringBuilder current = new StringBuilder();
 
             for (String part : parts) {
+                // 跳过空白 part
+                if (part == null || part.isBlank()) continue;
+
                 // 单个 part 超长 → 递归用下一层分隔符切
                 if (part.length() > maxSize) {
                     // 先把 current 落盘
-                    if (!current.isEmpty()) {
+                    if (!current.toString().isBlank()) {
                         result.add(TextSegment.from(current.toString(), meta.copy()));
                         String saved = current.toString();
                         int start = Math.max(0, saved.length() - overlap);
@@ -170,7 +245,7 @@ public class ContextualChunker {
                 }
             }
 
-            if (!current.isEmpty()) {
+            if (!current.toString().isBlank()) {
                 result.add(TextSegment.from(current.toString(), meta.copy()));
             }
 
@@ -182,7 +257,10 @@ public class ContextualChunker {
             java.util.List<TextSegment> result = new java.util.ArrayList<>();
             for (int i = 0; i < text.length(); i += maxSize - overlap) {
                 int end = Math.min(i + maxSize, text.length());
-                result.add(TextSegment.from(text.substring(i, end), meta.copy()));
+                String chunk = text.substring(i, end);
+                if (!chunk.isBlank()) {
+                    result.add(TextSegment.from(chunk, meta.copy()));
+                }
             }
             return result;
         }

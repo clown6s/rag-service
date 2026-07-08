@@ -36,16 +36,17 @@ public class RetrievalPipeline {
 
         // Step 1: Query 改写（Multi-Query + 关键词提取）
         var rewritten = queryRewriter.rewrite(query);
-        String searchQuery = rewritten.queries().isEmpty()
-                ? query : String.join(" ", rewritten.queries());
-        log.info("[检索] 改写: {} → {}", query, searchQuery);
+        // 短查询(≤4字)用改写结果扩展检索路径，长查询只取关键词补充
+        String expandedQuery = (query.length() <= 4 && !rewritten.queries().isEmpty())
+                ? String.join(" ", rewritten.queries()) : null;
+        log.info("[检索] 改写: {} → expandedQuery={}, keywords={}", query, expandedQuery, rewritten.keywords());
 
-        // Step 2: 混合检索（向量 + BM25）
+        // Step 2: 混合检索（短查询：原query+expandedQuery双路dense+BM25用expanded；长查询：原query单路）
         List<TextSegment> candidates = hybridRetriever.search(
-                searchQuery, rewritten.keywords(), topK, metadataFilter);
+                query, expandedQuery, rewritten.keywords(), topK, metadataFilter);
         log.info("[检索] 召回: {} 条", candidates.size());
 
-        // Step 3: Cross-Encoder 重排
+        // Step 3: Cross-Encoder 重排（始终用原 query，防漂移）
         List<TextSegment> reranked = reranker.rerank(query, candidates);
         long elapsed = System.currentTimeMillis() - start;
         log.info("[检索] 完成: {} 条, 耗时 {}ms", reranked.size(), elapsed);
@@ -79,6 +80,7 @@ public class RetrievalPipeline {
             totalLen += entry.length();
         }
 
+        log.info("[检索] context预览(前800字): {}", sb.substring(0, Math.min(800, sb.length())));
         return sb.toString();
     }
 
