@@ -53,6 +53,12 @@ public class MilvusConfig {
     @Value("${milvus.password:}")
     private String password;
 
+    @Value("${milvus.hnsw.m:32}")
+    private int hnswM;
+
+    @Value("${milvus.hnsw.ef-construction:200}")
+    private int hnswEfConstruction;
+
     // 字段名常量（供 IngestionPipeline/HybridRetriever/KnowledgeBaseController 引用）
     public static final String FIELD_ID = "id";
     public static final String FIELD_TEXT = "text";
@@ -129,7 +135,7 @@ public class MilvusConfig {
             indexes.add(IndexParam.builder().fieldName(FIELD_DENSE)
                     .indexType(IndexParam.IndexType.HNSW)
                     .metricType(IndexParam.MetricType.COSINE)
-                    .extraParams(Map.of("M", 16, "efConstruction", 64))
+                    .extraParams(Map.of("M", hnswM, "efConstruction", hnswEfConstruction))
                     .build());
             indexes.add(IndexParam.builder().fieldName(FIELD_SPARSE)
                     .indexType(IndexParam.IndexType.SPARSE_INVERTED_INDEX)

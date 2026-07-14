@@ -57,6 +57,10 @@ milvus:
   metric-type: COSINE
   # Milvus 2.5 原生 BM25 全文索引
   enable-fulltext: true
+  # HNSW 索引参数（修改后需 drop collection 重建索引才能生效）
+  hnsw:
+    m: 32
+    ef-construction: 200
   # Milvus 鉴权（生产必须开启）
   username: ${MILVUS_USERNAME:}
   password: ${MILVUS_PASSWORD:}
@@ -68,11 +72,13 @@ rag:
   chunking:
     max-segment-size: 512     # tokens
     overlap-size: 50
+  ingestion:
+    status-file: data/ingestion-status.json  # 摄入状态持久化文件路径
   retrieval:
     top-k: 20                 # 混合检索召回数
     final-k: 15               # Rerank 后保留数（10→15，让更多文档进入上下文）
-    bm25-weight: 0.3
-    vector-weight: 0.7
+    rrf-k: 60                 # RRF 融合平滑常数（论文经验值，40-80 均可）
+    hnsw-ef: 128              # HNSW 搜索时探索宽度（≥ top-k*2，越大召回率越高但越慢）
   rerank:
     model: BAAI/bge-reranker-v2-m3
     api-url: https://api.siliconflow.cn/v1/rerank

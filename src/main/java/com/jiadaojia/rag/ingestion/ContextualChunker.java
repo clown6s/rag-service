@@ -14,12 +14,12 @@ import java.util.List;
 
 /**
  * 上下文增强切分器 — Contextual Retrieval 核心实现
- *
+ * <p>
  * 流程：
  * 1. LLM 理解整篇文档 → 生成简要摘要
  * 2. 摘要拼到每个 chunk 前面作为前置上下文
  * 3. 递归切分器切割
- *
+ * <p>
  * 效果：Anthropic 实验表明检索失败率降低 49%
  */
 @Slf4j
@@ -101,7 +101,6 @@ public class ContextualChunker {
     /**
      * 按法律条款"第X条"边界切分，每条独立 chunk
      * 解决 BM25 分词"第五条"→"第五"+"条"误匹配"第五十四条"的问题
-     *
      * 关键修复：第一个"第X条"之前的内容（如文档标题、景点知识等）也要保留为 chunk
      */
     private List<TextSegment> splitByLegalArticle(String text) {
@@ -192,7 +191,6 @@ public class ContextualChunker {
         }
 
         private List<TextSegment> splitRecursive(String text, String[] seps, int depth, Metadata meta) {
-            // 空白文本不产生 segment（langchain4j 1.17.x TextSegment.from 对 blank 抛异常）
             if (text == null || text.isBlank()) {
                 return List.of();
             }

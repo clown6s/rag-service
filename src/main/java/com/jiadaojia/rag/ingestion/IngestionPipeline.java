@@ -2,25 +2,32 @@ package com.jiadaojia.rag.ingestion;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.google.gson.reflect.TypeToken;
 import com.jiadaojia.rag.config.MilvusConfig;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.vector.request.InsertReq;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
  * 文档摄入流水线（原生 MilvusClientV2 insert，sparse_bm25 由 Function 自动生成）
  * 6步：上传 → 解析 → 上下文增强 → 切分 → 向量化 → 存储
- * 状态追踪：内存 ConcurrentHashMap（重启丢失）
+ * 状态追踪：内存 LRU Map + 文件持久化（启动时加载，更新时写入）
  */
 @Slf4j
 @Component
@@ -35,6 +42,9 @@ public class IngestionPipeline {
     @Value("${milvus.collection}")
     private String collectionName;
 
+    @Value("${rag.ingestion.status-file:data/ingestion-status.json}")
+    private String statusFilePath;
+
     private static final int MAX_STATUS = 1000;
     private final java.util.Map<String, IngestionStatus> statusMap =
             java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>(128, 0.75f, true) {
@@ -42,6 +52,8 @@ public class IngestionPipeline {
                     return size() > MAX_STATUS;
                 }
             });
+
+    private static final Type STATUS_MAP_TYPE = new TypeToken<Map<String, IngestionStatus>>(){}.getType();
 
     public IngestionPipeline(
             DocumentParser parser,
@@ -52,6 +64,27 @@ public class IngestionPipeline {
         this.chunker = chunker;
         this.embeddingModel = embeddingModel;
         this.milvusClient = milvusClient;
+    }
+
+    /**
+     * 启动时从本地文件加载历史摄入状态，解决重启丢失问题
+     */
+    @PostConstruct
+    public void loadStatus() {
+        try {
+            File file = new File(statusFilePath);
+            if (file.exists()) {
+                try (FileReader reader = new FileReader(file)) {
+                    Map<String, IngestionStatus> loaded = gson.fromJson(reader, STATUS_MAP_TYPE);
+                    if (loaded != null && !loaded.isEmpty()) {
+                        statusMap.putAll(loaded);
+                        log.info("[摄入] 加载历史状态 {} 条", loaded.size());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[摄入] 加载状态文件失败: {}", e.getMessage());
+        }
     }
 
     public String ingest(MultipartFile file, String title, String tags) {
@@ -114,6 +147,24 @@ public class IngestionPipeline {
 
     private void updateStatus(String docId, String status, Integer totalChunks, String error) {
         statusMap.put(docId, new IngestionStatus(docId, status, totalChunks, error));
+        persistStatus();
+    }
+
+    /**
+     * 将当前状态写入本地文件，保证重启后可恢复
+     */
+    private void persistStatus() {
+        try {
+            File file = new File(statusFilePath);
+            if (file.getParentFile() != null) {
+                file.getParentFile().mkdirs();
+            }
+            try (FileWriter writer = new FileWriter(file)) {
+                gson.toJson(statusMap, writer);
+            }
+        } catch (Exception e) {
+            log.warn("[摄入] 持久化状态文件失败: {}", e.getMessage());
+        }
     }
 
     public record IngestionStatus(String docId, String status, Integer totalChunks, String error) {}

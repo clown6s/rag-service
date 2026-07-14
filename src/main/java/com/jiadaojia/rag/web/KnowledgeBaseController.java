@@ -51,15 +51,19 @@ public class KnowledgeBaseController {
 
     /**
      * 列出所有已摄入文档（按 document_id 去重，从 Milvus query 聚合）
+     * 支持分页：offset 偏移量，limit 每页数量
      */
     @GetMapping("/documents")
-    public ApiResponse<java.util.List<DocumentInfo>> listDocuments() {
+    public ApiResponse<java.util.List<DocumentInfo>> listDocuments(
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam(defaultValue = "1000") int limit) {
         try {
             QueryResp resp = milvusClient.query(QueryReq.builder()
                     .collectionName(collectionName)
                     .filter("id >= 0")  // Milvus query 需要 filter，id>=0 获取所有行
                     .outputFields(java.util.List.of("document_id", "title"))
-                    .limit(1000)
+                    .offset(offset)
+                    .limit(limit)
                     .build());
             java.util.Map<String, DocumentInfo> docs = new java.util.LinkedHashMap<>();
             for (QueryResp.QueryResult r : resp.getQueryResults()) {
@@ -153,9 +157,9 @@ public class KnowledgeBaseController {
             String filter;
             if (source != null && !source.isBlank()) {
                 // 按文件名查所有chunk（不用TEXT_MATCH，直接标量过滤）
-                filter = "source == \"" + source + "\"";
+                filter = "source == \"" + escapeFilterValue(source) + "\"";
             } else if (keyword != null && !keyword.isBlank()) {
-                filter = "TEXT_MATCH(text, '" + keyword + "')";
+                filter = "TEXT_MATCH(text, '" + escapeFilterValue(keyword) + "')";
             } else {
                 filter = "id >= 0";
             }
@@ -188,5 +192,16 @@ public class KnowledgeBaseController {
 
     /** 诊断 chunk 信息 */
     public record ChunkInfo(String docId, String title, String source, String preview, int fullLength) {}
+
+    /**
+     * 转义 Milvus filter 表达式中的用户输入，防止注入
+     * 转义反斜杠和引号（双引号/单引号都转义，兼容两种 filter 写法）
+     */
+    private String escapeFilterValue(String input) {
+        if (input == null) return "";
+        return input.replace("\\", "\\\\")
+                     .replace("\"", "\\\"")
+                     .replace("'", "\\'");
+    }
 
 }

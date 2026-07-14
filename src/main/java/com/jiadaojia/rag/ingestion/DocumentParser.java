@@ -27,11 +27,11 @@ import java.io.InputStream;
 
 /**
  * 文档解析器
- *
+ * <p>
  * .doc  → Apache POI HWPFDocument + WordExtractor（直接底层提取，比 Tika 更完整）
  * .docx → Apache POI XWPFDocument + XWPFWordExtractor
  * 其他   → Apache Tika AutoDetectParser
- *
+ * <p>
  * 关键修复：Tika parseToString/AutoDetectParser 对某些 .doc 文件会丢失内容
  * （文本框、表格、分节等），改用 POI 直接提取确保完整。
  */
@@ -65,12 +65,8 @@ public class DocumentParser {
             // 清理多余空白
             text = text.replaceAll("\\n{3,}", "\n\n").trim();
 
-            // 详细日志：检查关键词是否在解析结果中
-            boolean hasLongmen = text.contains("龙门");
-            boolean hasShiku = text.contains("石窟");
             String preview = text.length() > 500 ? text.substring(0, 500) : text;
-            log.info("[解析] 文件={} 文本长度={} 含龙门={} 含石窟={} 预览前500字=[{}]",
-                    fileName, text.length(), hasLongmen, hasShiku, preview);
+            log.info("[解析] 文件={} 文本长度={} 预览前500字=[{}]", fileName, text.length(), preview);
 
             if (text.isBlank()) {
                 log.warn("[解析] 文件={} 主解析为空，尝试 Tika fallback", fileName);
@@ -105,6 +101,7 @@ public class DocumentParser {
             // 2. 手动遍历 Range 补充表格内容（WordExtractor 有时漏掉表格内文字）
             try {
                 Range range = doc.getRange();
+                System.out.println("range = " + range.text());
                 int tableCount = 0;
                 StringBuilder tableText = new StringBuilder();
                 for (int i = 0; i < range.numParagraphs(); i++) {
@@ -133,8 +130,7 @@ public class DocumentParser {
             }
 
             String result = sb.toString();
-            log.info("[解析-POI] .doc 最终文本长度={} 含龙门={} 含石窟={}",
-                    result.length(), result.contains("龙门"), result.contains("石窟"));
+            log.info("[解析-POI] .doc 最终文本长度={}", result.length());
             return result;
         }
     }

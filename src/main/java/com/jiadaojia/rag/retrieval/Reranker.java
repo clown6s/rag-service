@@ -13,7 +13,7 @@ import java.util.stream.Collectors;
 
 /**
  * Cross-Encoder 重排器
- *
+ * <p>
  * 调用 bge-reranker-v2-m3 API，对召回结果精排。
  * Bi-Encoder 召回（快）→ Cross-Encoder 精排（准）。
  */

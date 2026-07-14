@@ -21,12 +21,12 @@ import java.util.Map;
 
 /**
  * 混合检索器（向量 ANN + BM25 全文检索 → RRF 融合）
- *
+ * <p>
  * Milvus 2.5 原生 hybridSearch（v2.5.x API）：
  * - 路1 dense: FloatVec 向量 ANN
  * - 路2 sparse: EmbeddedText 查询文本，Milvus 内部 BM25 Function 自动分词+生成稀疏向量
  * - RRFRanker 融合两路结果（new RRFRanker(k)）
- *
+ * <p>
  * v2.5.x API 要点：.ranker() 非 .functionScore()，.topK() 非 .limit()，.outFields() 非 .outputFields()
  */
 @Slf4j
@@ -38,6 +38,12 @@ public class HybridRetriever {
 
     @Value("${milvus.collection}")
     private String collectionName;
+
+    @Value("${rag.retrieval.rrf-k:60}")
+    private int rrfK;
+
+    @Value("${rag.retrieval.hnsw-ef:128}")
+    private int hnswEf;
 
     public HybridRetriever(MilvusClientV2 milvusClient, EmbeddingModel embeddingModel) {
         this.milvusClient = milvusClient;
@@ -62,7 +68,7 @@ public class HybridRetriever {
             AnnSearchReq denseOriginal = AnnSearchReq.builder()
                     .vectorFieldName(MilvusConfig.FIELD_DENSE)
                     .vectors(List.of(new FloatVec(queryEmbedding.vector())))
-                    .params("{\"ef\": 64}")
+                    .params("{\"ef\": " + hnswEf + "}")
                     .topK(topK * 2)
                     .build();
 
@@ -73,7 +79,7 @@ public class HybridRetriever {
                 denseExpanded = AnnSearchReq.builder()
                         .vectorFieldName(MilvusConfig.FIELD_DENSE)
                         .vectors(List.of(new FloatVec(expandedEmbedding.vector())))
-                        .params("{\"ef\": 64}")
+                        .params("{\"ef\": " + hnswEf + "}")
                         .topK(topK * 2)
                         .build();
                 log.info("[混合检索] 短查询加路: 原query={}, expandedQuery={}", query, expandedQuery);
@@ -82,9 +88,10 @@ public class HybridRetriever {
             // BM25 全文检索：短查询用 expandedQuery（更多关键词命中），长查询用原query
             String bm25QueryText = (expandedQuery != null && !expandedQuery.isBlank())
                     ? expandedQuery : query;
+            EmbeddedText embeddedText = new EmbeddedText(bm25QueryText);
             AnnSearchReq sparseReq = AnnSearchReq.builder()
                     .vectorFieldName(MilvusConfig.FIELD_SPARSE)
-                    .vectors(List.of(new EmbeddedText(bm25QueryText)))
+                    .vectors(List.of(embeddedText))
                     .topK(topK * 2)
                     .build();
 
@@ -97,7 +104,7 @@ public class HybridRetriever {
             HybridSearchReq hybridReq = HybridSearchReq.builder()
                     .collectionName(collectionName)
                     .searchRequests(searchRequests)
-                    .ranker(new RRFRanker(60))
+                    .ranker(new RRFRanker(rrfK))
                     .topK(topK)
                     .outFields(List.of(MilvusConfig.FIELD_TEXT, MilvusConfig.FIELD_SOURCE))
                     .build();

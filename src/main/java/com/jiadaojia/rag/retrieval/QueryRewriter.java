@@ -13,7 +13,7 @@ import java.util.List;
 
 /**
  * Query 改写器
- *
+ * <p>
  * 策略1: Multi-Query — 生成多个角度查询，提高召回覆盖率
  * 策略2: 关键词提取 — 用于 BM25 精确匹配
  **/
