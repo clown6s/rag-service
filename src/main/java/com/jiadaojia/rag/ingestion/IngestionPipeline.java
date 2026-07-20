@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.reflect.TypeToken;
 import com.jiadaojia.rag.config.MilvusConfig;
+import com.jiadaojia.rag.graph.EntityExtractor;
+import com.jiadaojia.rag.graph.GraphStore;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -23,10 +25,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 文档摄入流水线（原生 MilvusClientV2 insert，sparse_bm25 由 Function 自动生成）
- * 6步：上传 → 解析 → 上下文增强 → 切分 → 向量化 → 存储
+ * 7步：上传 → 解析 → 上下文增强 → 切分 → 实体抽取(图) → 向量化 → 存储
  * 状态追踪：内存 LRU Map + 文件持久化（启动时加载，更新时写入）
  */
 @Slf4j
@@ -37,6 +43,8 @@ public class IngestionPipeline {
     private final ContextualChunker chunker;
     private final EmbeddingModel embeddingModel;
     private final MilvusClientV2 milvusClient;
+    private final EntityExtractor entityExtractor;
+    private final GraphStore graphStore;
     private final Gson gson = new Gson();
 
     @Value("${milvus.collection}")
@@ -44,6 +52,9 @@ public class IngestionPipeline {
 
     @Value("${rag.ingestion.status-file:data/ingestion-status.json}")
     private String statusFilePath;
+
+    @Value("${rag.graph.extract-concurrency:8}")
+    private int graphConcurrency;
 
     private static final int MAX_STATUS = 1000;
     private final java.util.Map<String, IngestionStatus> statusMap =
@@ -59,11 +70,15 @@ public class IngestionPipeline {
             DocumentParser parser,
             ContextualChunker chunker,
             EmbeddingModel embeddingModel,
-            MilvusClientV2 milvusClient) {
+            MilvusClientV2 milvusClient,
+            EntityExtractor entityExtractor,
+            GraphStore graphStore) {
         this.parser = parser;
         this.chunker = chunker;
         this.embeddingModel = embeddingModel;
         this.milvusClient = milvusClient;
+        this.entityExtractor = entityExtractor;
+        this.graphStore = graphStore;
     }
 
     /**
@@ -101,6 +116,34 @@ public class IngestionPipeline {
             String docTitle = (title != null && !title.isBlank()) ? title : fileName;
             List<TextSegment> chunks = chunker.chunk(rawText, docTitle);
             log.info("[摄入] 切分完成 docId={} chunks={}", docId, chunks.size());
+
+            // Step 4.5: 实体抽取 + 知识图谱存储（GraphRAG）— 并行执行
+            updateStatus(docId, "GRAPH_EXTRACT", null, null);
+            int totalChunks = chunks.size();
+            ExecutorService executor = Executors.newFixedThreadPool(
+                    Math.min(graphConcurrency, totalChunks));
+            List<CompletableFuture<Void>> futures = new ArrayList<>(totalChunks);
+            AtomicInteger done = new AtomicInteger(0);
+
+            for (int i = 0; i < totalChunks; i++) {
+                final int idx = i;
+                final String chunkText = chunks.get(i).text();
+                futures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        var graphData = entityExtractor.extract(chunkText, docId, idx);
+                        graphStore.save(graphData, docId, idx);
+                    } catch (Exception e) {
+                        log.warn("[摄入] 实体抽取失败 docId={} chunk={}: {}", docId, idx, e.getMessage());
+                    }
+                    int completed = done.incrementAndGet();
+                    if (completed % 10 == 0 || completed == totalChunks) {
+                        log.info("[摄入] 图构建进度 docId={} {}/{}", docId, completed, totalChunks);
+                    }
+                }, executor));
+            }
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            executor.shutdown();
+            log.info("[摄入] 图构建完成 docId={} chunks={}", docId, totalChunks);
 
             updateStatus(docId, "EMBEDDING", null, null);
             List<Embedding> embeddings = batchEmbed(chunks);

@@ -66,6 +66,15 @@ milvus:
   password: ${MILVUS_PASSWORD:}
 
 # ============================================================
+# Neo4j 图数据库（GraphRAG 知识图谱）
+# ============================================================
+neo4j:
+  uri: bolt://10.211.55.30:7687
+  authentication:
+    username: neo4j
+    password: 'fjxb08n48!dl2i9t9%V@'
+
+# ============================================================
 # RAG 参数
 # ============================================================
 rag:
@@ -82,6 +91,8 @@ rag:
   rerank:
     model: BAAI/bge-reranker-v2-m3
     api-url: https://api.siliconflow.cn/v1/rerank
+  graph:
+    max-hops: 2               # 图遍历最大跳数（越大越深但越慢）
   rewrite:
     multi-query-count: 3
   upload:

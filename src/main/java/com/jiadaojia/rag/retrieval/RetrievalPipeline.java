@@ -1,8 +1,8 @@
 package com.jiadaojia.rag.retrieval;
 
+import com.jiadaojia.rag.graph.GraphRetriever;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.store.embedding.filter.Filter;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -12,19 +12,30 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
- * 检索流水线 — 串联 Query改写 → 混合检索 → Rerank 全流程
+ * 检索流水线 — 串联 Query改写 → 混合检索 → Rerank → 图遍历 全流程
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class RetrievalPipeline {
 
     private final QueryRewriter queryRewriter;
     private final HybridRetriever hybridRetriever;
     private final Reranker reranker;
+    private final GraphRetriever graphRetriever;
 
     @Value("${rag.retrieval.top-k:20}")
     private int topK;
+
+    public RetrievalPipeline(
+            QueryRewriter queryRewriter,
+            HybridRetriever hybridRetriever,
+            Reranker reranker,
+            GraphRetriever graphRetriever) {
+        this.queryRewriter = queryRewriter;
+        this.hybridRetriever = hybridRetriever;
+        this.reranker = reranker;
+        this.graphRetriever = graphRetriever;
+    }
 
     /**
      * 执行完整检索链路
@@ -48,10 +59,15 @@ public class RetrievalPipeline {
 
         // Step 3: Cross-Encoder 重排（始终用原 query，防漂移）
         List<TextSegment> reranked = reranker.rerank(query, candidates);
-        long elapsed = System.currentTimeMillis() - start;
-        log.info("[检索] 完成: {} 条, 耗时 {}ms", reranked.size(), elapsed);
 
-        return new PipelineResult(reranked, rewritten);
+        // Step 4: 知识图谱遍历（从用户 query 提取实体，Neo4j 多跳查找关联）
+        String graphContext = graphRetriever.expand(query);
+
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("[检索] 完成: {} 条, 图上下文 {}chars, 耗时 {}ms",
+                reranked.size(), graphContext.length(), elapsed);
+
+        return new PipelineResult(reranked, rewritten, graphContext);
     }
 
     /**
@@ -59,12 +75,18 @@ public class RetrievalPipeline {
      * @param maxTokens 最大 token 数（粗略按字数估算）
      */
     public String buildContext(PipelineResult result, int maxTokens) {
-        if (result.segments().isEmpty()) {
+        if (result.segments().isEmpty() && result.graphContext().isBlank()) {
             return "暂无相关资料。";
         }
 
         StringBuilder sb = new StringBuilder();
-        int totalLen = 0;
+
+        // 知识图谱上下文（实体关系）
+        if (!result.graphContext().isBlank()) {
+            sb.append("## 知识图谱关联\n").append(result.graphContext()).append("\n\n");
+        }
+
+        int totalLen = sb.length();
         int maxChars = maxTokens * 2; // 粗略: 1 token ≈ 2 中文字符
 
         for (int i = 0; i < result.segments().size(); i++) {
@@ -86,7 +108,8 @@ public class RetrievalPipeline {
 
     public record PipelineResult(
             List<TextSegment> segments,
-            QueryRewriter.RewriteResult rewriteInfo) {
+            QueryRewriter.RewriteResult rewriteInfo,
+            String graphContext) {
 
         /** 返回去重文件名列表（用于 parseCitedSources 匹配 LLM 引用的文件名） */
         public List<String> getIndexedSources() {

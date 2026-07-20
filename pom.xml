@@ -94,6 +94,12 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Neo4j 图数据库 -->
+        <dependency>
+            <groupId>org.neo4j.driver</groupId>
+            <artifactId>neo4j-java-driver</artifactId>
+        </dependency>
+
         <!-- .env 文件支持 -->
         <dependency>
             <groupId>me.paulschwarz</groupId>

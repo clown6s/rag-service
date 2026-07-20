@@ -82,6 +82,7 @@ public class LLMConfig {
 
     /**
      * 用于 Contextual Chunker 的轻量摘要模型（复用 V3）
+     * maxTokens=256，只生成 50 字摘要
      */
     @Bean
     @Qualifier("contextualChatModel")
@@ -93,6 +94,23 @@ public class LLMConfig {
                 .temperature(0.1)
                 .maxTokens(256)
                 .timeout(Duration.ofSeconds(30))
+                .build();
+    }
+
+    /**
+     * 用于实体关系抽取的模型（复用 V3）
+     * maxTokens=4096，保证 JSON 输出不被截断
+     */
+    @Bean
+    @Qualifier("graphChatModel")
+    public ChatModel graphChatModel() {
+        return OpenAiChatModel.builder()
+                .apiKey(apiKey)
+                .baseUrl(baseUrl)
+                .modelName("deepseek-chat")
+                .temperature(0.1)
+                .maxTokens(4096)
+                .timeout(Duration.ofSeconds(60))
                 .build();
     }
 }
