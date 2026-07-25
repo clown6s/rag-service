@@ -1,4 +1,4 @@
-package com.jiadaojia.rag.ingestion;
+package com.zzp.rag.ingestion;
 
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.Metadata;

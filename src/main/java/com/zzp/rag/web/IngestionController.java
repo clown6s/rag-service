@@ -1,7 +1,7 @@
-package com.jiadaojia.rag.web;
+package com.zzp.rag.web;
 
-import com.jiadaojia.rag.ingestion.IngestionPipeline;
-import com.jiadaojia.rag.ingestion.IngestionPipeline.IngestionStatus;
+import com.zzp.rag.ingestion.IngestionPipeline;
+import com.zzp.rag.ingestion.IngestionPipeline.IngestionStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.tika.Tika;

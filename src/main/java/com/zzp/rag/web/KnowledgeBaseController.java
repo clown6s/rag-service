@@ -1,6 +1,6 @@
-package com.jiadaojia.rag.web;
+package com.zzp.rag.web;
 
-import com.jiadaojia.rag.config.MilvusConfig;
+import com.zzp.rag.config.MilvusConfig;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.collection.request.DropCollectionReq;
 import io.milvus.v2.service.collection.request.GetCollectionStatsReq;

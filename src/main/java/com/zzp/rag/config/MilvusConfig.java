@@ -1,4 +1,4 @@
-package com.jiadaojia.rag.config;
+package com.zzp.rag.config;
 
 import io.milvus.common.clientenum.FunctionType;
 import io.milvus.v2.client.ConnectConfig;

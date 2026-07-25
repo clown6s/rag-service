@@ -1,4 +1,4 @@
-package com.jiadaojia.rag.web;
+package com.zzp.rag.web;
 
 /**
  * 统一 API 响应体

@@ -1,6 +1,6 @@
-package com.jiadaojia.rag.retrieval;
+package com.zzp.rag.retrieval;
 
-import com.jiadaojia.rag.graph.GraphRetriever;
+import com.zzp.rag.graph.GraphRetriever;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.store.embedding.filter.Filter;
 import lombok.extern.slf4j.Slf4j;

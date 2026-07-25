@@ -1,4 +1,4 @@
-package com.jiadaojia.rag.config;
+package com.zzp.rag.config;
 
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiEmbeddingModel;

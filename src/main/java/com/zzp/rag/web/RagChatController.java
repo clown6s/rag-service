@@ -1,6 +1,6 @@
-package com.jiadaojia.rag.web;
+package com.zzp.rag.web;
 
-import com.jiadaojia.rag.retrieval.RetrievalPipeline;
+import com.zzp.rag.retrieval.RetrievalPipeline;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;

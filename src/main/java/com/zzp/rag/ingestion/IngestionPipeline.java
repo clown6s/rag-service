@@ -1,11 +1,11 @@
-package com.jiadaojia.rag.ingestion;
+package com.zzp.rag.ingestion;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.reflect.TypeToken;
-import com.jiadaojia.rag.config.MilvusConfig;
-import com.jiadaojia.rag.graph.EntityExtractor;
-import com.jiadaojia.rag.graph.GraphStore;
+import com.zzp.rag.config.MilvusConfig;
+import com.zzp.rag.graph.EntityExtractor;
+import com.zzp.rag.graph.GraphStore;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;

@@ -1,4 +1,4 @@
-package com.jiadaojia.rag.retrieval;
+package com.zzp.rag.retrieval;
 
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.service.AiServices;

@@ -1,6 +1,6 @@
-package com.jiadaojia.rag.retrieval;
+package com.zzp.rag.retrieval;
 
-import com.jiadaojia.rag.config.MilvusConfig;
+import com.zzp.rag.config.MilvusConfig;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;

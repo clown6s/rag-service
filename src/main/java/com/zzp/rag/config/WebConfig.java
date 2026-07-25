@@ -1,4 +1,4 @@
-package com.jiadaojia.rag.config;
+package com.zzp.rag.config;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;

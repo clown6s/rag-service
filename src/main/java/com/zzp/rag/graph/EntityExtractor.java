@@ -1,4 +1,4 @@
-package com.jiadaojia.rag.graph;
+package com.zzp.rag.graph;
 
 import com.google.gson.Gson;
 import dev.langchain4j.model.chat.ChatModel;

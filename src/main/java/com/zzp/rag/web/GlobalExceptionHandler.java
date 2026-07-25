@@ -1,6 +1,6 @@
-package com.jiadaojia.rag.web;
+package com.zzp.rag.web;
 
-import com.jiadaojia.rag.ingestion.DocumentParser.IngestionException;
+import com.zzp.rag.ingestion.DocumentParser.IngestionException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
