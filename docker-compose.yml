@@ -63,6 +63,10 @@ services:
       - graph
 
   # ==================== RAG 服务 ====================
+  # ai-sidecar（Python 边车）已独立为单独仓库独立部署，不在此编排：
+  #   仓库 D:\project\ai-sidecar（自带 docker-compose.yml）
+  #   rag-service 通过 http://<sidecar-host>:8081/rerank 调用（application.yml: rag.rerank.api-url）
+  #   sidecar 未部署时 rerank 自动降级为原始 Top-K，不影响检索主链路
   rag-service:
     build: .
     ports:
@@ -71,6 +75,7 @@ services:
       SPRING_PROFILES_ACTIVE: prod
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY}
+      AISIDECAR_TOKEN: ${AISIDECAR_TOKEN:-}
       MILVUS_HOST: milvus
       MILVUS_USERNAME: ${MILVUS_USERNAME}
       MILVUS_PASSWORD: ${MILVUS_PASSWORD}

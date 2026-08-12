@@ -1,5 +1,8 @@
 package com.zzp.rag.web;
 
+import com.zzp.rag.audit.AuditEvent;
+import com.zzp.rag.audit.AuditEvent.AuditContext;
+import com.zzp.rag.audit.AuditService;
 import com.zzp.rag.retrieval.RetrievalPipeline;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
@@ -8,6 +11,7 @@ import jakarta.annotation.PreDestroy;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,7 +21,10 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -36,6 +43,7 @@ public class RagChatController {
     private final RetrievalPipeline retrievalPipeline;
     private final ChatModel chatModel;
     private final StreamingChatModel streamingChatModel;
+    private final AuditService auditService;
 
     private final ExecutorService executor = new ThreadPoolExecutor(
             16, 16, 0L, TimeUnit.MILLISECONDS,
@@ -48,10 +56,12 @@ public class RagChatController {
     public RagChatController(
             RetrievalPipeline retrievalPipeline,
             @Qualifier("chatModel") ChatModel chatModel,
-            @Qualifier("streamingChatModel") StreamingChatModel streamingChatModel) {
+            @Qualifier("streamingChatModel") StreamingChatModel streamingChatModel,
+            AuditService auditService) {
         this.retrievalPipeline = retrievalPipeline;
         this.chatModel = chatModel;
         this.streamingChatModel = streamingChatModel;
+        this.auditService = auditService;
     }
 
     @PreDestroy
@@ -72,17 +82,23 @@ public class RagChatController {
 
     @PostMapping("/chat")
     public ApiResponse<ChatResponse> chat(@Valid @RequestBody ChatRequest req) {
+        long start = System.currentTimeMillis();
+        RetrievalPipeline.PipelineResult result = null;
         try {
             String searchQuery = buildSearchQuery(req.query(), req.history());
-            var result = retrievalPipeline.execute(searchQuery, null);
+            result = retrievalPipeline.execute(searchQuery, null);
             String context = retrievalPipeline.buildContext(result, 3000);
 
             String prompt = buildPrompt(context, req.query(), req.history());
             String answer = sanitizeCitations(chatModel.chat(prompt));
 
+            auditService.record(buildAuditEvent("chat", req, result, answer,
+                    System.currentTimeMillis() - start, "SUCCESS", null));
             return ApiResponse.ok(new ChatResponse(answer, result.getSources()));
         } catch (Exception e) {
             log.error("[对话] 失败 query={}", req.query(), e);
+            auditService.record(buildAuditEvent("chat", req, result, null,
+                    System.currentTimeMillis() - start, "FAILED", e.getMessage()));
             return ApiResponse.fail("处理失败: " + e.getMessage());
         }
     }
@@ -93,7 +109,15 @@ public class RagChatController {
     public SseEmitter chatStream(@Valid @RequestBody ChatRequest req) {
         SseEmitter emitter = new SseEmitter(300_000L);
 
+        // 异步线程不继承 RequestContext/MDC，先捕获审计上下文并在线程内恢复
+        AuditContext auditCtx = AuditContext.capture();
+        Map<String, String> mdcCtx = MDC.getCopyOfContextMap();
+
         executor.execute(() -> {
+            long start = System.currentTimeMillis();
+            if (mdcCtx != null) {
+                MDC.setContextMap(mdcCtx);
+            }
             try {
                 // 1. 检索（多轮：拼接上文）
                 String searchQuery = buildSearchQuery(req.query(), req.history());
@@ -139,6 +163,9 @@ public class RagChatController {
                                     .name("done")
                                     .data("[DONE]"));
                             emitter.complete();
+                            auditService.record(buildAuditEvent("chat/stream", req, result,
+                                    fullAnswer.toString(), System.currentTimeMillis() - start,
+                                    "SUCCESS", null, auditCtx));
                         } catch (IOException e) {
                             emitter.completeWithError(e);
                         }
@@ -147,6 +174,9 @@ public class RagChatController {
                     @Override
                     public void onError(Throwable error) {
                         log.error("[SSE] 生成失败", error);
+                        auditService.record(buildAuditEvent("chat/stream", req, result,
+                                fullAnswer.toString(), System.currentTimeMillis() - start,
+                                "GENERATION_FAILED", error.getMessage(), auditCtx));
                         try {
                             emitter.send(SseEmitter.event()
                                     .name("error")
@@ -159,6 +189,8 @@ public class RagChatController {
                 });
             } catch (Exception e) {
                 log.error("[SSE] 检索失败", e);
+                auditService.record(buildAuditEvent("chat/stream", req, null, null,
+                        System.currentTimeMillis() - start, "RETRIEVAL_FAILED", e.getMessage(), auditCtx));
                 try {
                     emitter.send(SseEmitter.event()
                             .name("error")
@@ -167,6 +199,8 @@ public class RagChatController {
                 } catch (IOException ignored) {
                     emitter.completeWithError(e);
                 }
+            } finally {
+                MDC.clear();
             }
         });
 
@@ -294,6 +328,44 @@ public class RagChatController {
             log.debug("[fixToken] 修复: [{}] → [{}]", token, result);
         }
         return result;
+    }
+
+    // ==================== 审计 ====================
+
+    /** 组装审计事件（同步请求线程内调用） */
+    private AuditEvent buildAuditEvent(String endpoint, ChatRequest req,
+                                       RetrievalPipeline.PipelineResult result,
+                                       String answer, long totalMs, String status, String error) {
+        return buildAuditEvent(endpoint, req, result, answer, totalMs, status, error, AuditContext.capture());
+    }
+
+    /** 组装审计事件（异步线程用，上下文已捕获） */
+    private AuditEvent buildAuditEvent(String endpoint, ChatRequest req,
+                                       RetrievalPipeline.PipelineResult result,
+                                       String answer, long totalMs, String status, String error,
+                                       AuditContext ctx) {
+        List<String> sources = result != null ? result.getSources() : List.of();
+        return new AuditEvent(
+                ctx.traceId(),
+                LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                ctx.user(), ctx.ip(), endpoint,
+                req.category(),
+                req.query(),
+                req.history() != null ? req.history().size() : 0,
+                sources,
+                result != null ? result.elapsedMs() : 0,
+                result != null && result.rerankDegraded(),
+                result != null ? result.graphContext().length() : 0,
+                truncate(answer, 500),
+                answer != null ? answer.length() : 0,
+                totalMs,
+                status,
+                error);
+    }
+
+    /** 回答过长时截断（控制审计文件体积；归档策略后续按合规要求调整） */
+    private String truncate(String s, int max) {
+        return AuditEvent.truncate(s, max);
     }
 
     // ==================== 请求/响应 record ====================

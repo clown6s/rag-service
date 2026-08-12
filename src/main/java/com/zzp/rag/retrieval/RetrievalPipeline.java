@@ -58,7 +58,11 @@ public class RetrievalPipeline {
         log.info("[检索] 召回: {} 条", candidates.size());
 
         // Step 3: Cross-Encoder 重排（始终用原 query，防漂移）
-        List<TextSegment> reranked = reranker.rerank(query, candidates);
+        Reranker.RerankResult rerankResult = reranker.rerank(query, candidates);
+        List<TextSegment> reranked = rerankResult.segments();
+        if (rerankResult.degraded()) {
+            log.warn("[检索] rerank 降级，返回原始 Top-{}", reranked.size());
+        }
 
         // Step 4: 知识图谱遍历（从用户 query 提取实体，Neo4j 多跳查找关联）
         String graphContext = graphRetriever.expand(query);
@@ -67,7 +71,7 @@ public class RetrievalPipeline {
         log.info("[检索] 完成: {} 条, 图上下文 {}chars, 耗时 {}ms",
                 reranked.size(), graphContext.length(), elapsed);
 
-        return new PipelineResult(reranked, rewritten, graphContext);
+        return new PipelineResult(reranked, rewritten, graphContext, elapsed, rerankResult.degraded());
     }
 
     /**
@@ -109,7 +113,9 @@ public class RetrievalPipeline {
     public record PipelineResult(
             List<TextSegment> segments,
             QueryRewriter.RewriteResult rewriteInfo,
-            String graphContext) {
+            String graphContext,
+            long elapsedMs,
+            boolean rerankDegraded) {
 
         /** 返回去重文件名列表（用于 parseCitedSources 匹配 LLM 引用的文件名） */
         public List<String> getIndexedSources() {

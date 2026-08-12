@@ -69,10 +69,12 @@ milvus:
 # Neo4j 图数据库（GraphRAG 知识图谱）
 # ============================================================
 neo4j:
-  uri: bolt://10.211.55.30:7687
+  # 旧机器 10.211.55.30 已下线，Neo4j 与 Milvus 同迁至 10.211.55.5
+  uri: bolt://10.211.55.5:7687
   authentication:
     username: neo4j
-    password: 'fjxb08n48!dl2i9t9%V@'
+    # 密钥由环境变量注入（勿硬编码进 git）
+    password: ${NEO4J_PASSWORD:}
 
 # ============================================================
 # RAG 参数
@@ -90,11 +92,20 @@ rag:
     hnsw-ef: 128              # HNSW 搜索时探索宽度（≥ top-k*2，越大召回率越高但越慢）
   rerank:
     model: BAAI/bge-reranker-v2-m3
-    api-url: https://api.siliconflow.cn/v1/rerank
+    # ai-sidecar（本地 bge-reranker，协议兼容硅基流动）；切回硅基流动：https://api.siliconflow.cn/v1/rerank
+    api-url: http://127.0.0.1:8081/rerank
+    # sidecar 鉴权 token；sidecar 未配 AISIDECAR_TOKEN 时留空即可
+    api-key: ${AISIDECAR_TOKEN:}
   graph:
     max-hops: 2               # 图遍历最大跳数（越大越深但越慢）
   rewrite:
     multi-query-count: 3
+  agent:
+    max-sequential-tool-invocations: 5   # 单轮最多连续工具调用次数（防死循环）
+    memory-max-messages: 12              # 服务端会话记忆窗口（按 conversationId 隔离）
+  audit:
+    enabled: true              # 审计事件写入 logs/audit/audit-YYYY-MM-DD.jsonl（异步，不阻塞链路）
+    log-dir: logs/audit
   upload:
     max-file-size: 20MB
     allowed-types: pdf,docx,doc,md,txt,html

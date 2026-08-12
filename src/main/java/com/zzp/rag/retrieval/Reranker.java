@@ -32,7 +32,8 @@ public class Reranker {
     @Value("${rag.retrieval.final-k:5}")
     private int finalK;
 
-    @Value("${langchain4j.embedding.api-key}")
+    /** sidecar/硅基流动鉴权；默认回落到 embedding 的 key（兼容旧配置） */
+    @Value("${rag.rerank.api-key:${langchain4j.embedding.api-key}}")
     private String apiKey;
 
     public Reranker() {
@@ -46,15 +47,15 @@ public class Reranker {
      * 对候选片段重排
      * @param query      用户查询
      * @param candidates 候选片段（召回结果）
-     * @return 按相关性降序排列，最多 finalK 条
+     * @return 重排结果（含降级标记，供审计记录）
      */
-    public List<TextSegment> rerank(String query, List<TextSegment> candidates) {
+    public RerankResult rerank(String query, List<TextSegment> candidates) {
         if (candidates == null || candidates.isEmpty()) {
-            return List.of();
+            return new RerankResult(List.of(), false);
         }
 
         if (candidates.size() <= finalK) {
-            return candidates;
+            return new RerankResult(candidates, false);
         }
 
         List<String> documents = candidates.stream()
@@ -83,10 +84,11 @@ public class Reranker {
 
             if (results == null) {
                 log.warn("[Rerank] 响应中无 results 字段");
-                return candidates.stream().limit(finalK).collect(Collectors.toList());
+                return new RerankResult(
+                        candidates.stream().limit(finalK).collect(Collectors.toList()), true);
             }
 
-            return results.stream()
+            List<TextSegment> reranked = results.stream()
                     .filter(r -> r.get("relevance_score") instanceof Number
                               && r.get("index") instanceof Number)
                     .sorted((a, b) -> Double.compare(
@@ -104,9 +106,14 @@ public class Reranker {
                     })
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
+            return new RerankResult(reranked, false);
         } catch (Exception e) {
             log.warn("[Rerank] API调用失败，返回原始Top-{}: {}", finalK, e.getMessage());
-            return candidates.stream().limit(finalK).collect(Collectors.toList());
+            return new RerankResult(
+                    candidates.stream().limit(finalK).collect(Collectors.toList()), true);
         }
     }
+
+    /** 重排结果：segments=重排后片段，degraded=是否发生降级（供审计记录） */
+    public record RerankResult(List<TextSegment> segments, boolean degraded) {}
 }
