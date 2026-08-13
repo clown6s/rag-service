@@ -9,8 +9,9 @@
 2. 对每个问题:
    - 重放 /api/rag/agent/chat 生成完整 answer（审计里存的是 500 字截断预览）
    - 调 /api/rag/search 回放检索得到 contexts（前 5 条命中片段）
-3. 输出 data/testset.json（question/ground_truth/answer/contexts）；
-   ground_truth 留空待人工标注（不标也可跑 context_precision；context_recall 需要人工标参考文档）
+3. 输出 data/testset.json（question/reference/answer/contexts）；
+   reference 留空待人工标注；--snapshot-reference 可把当前 contexts 快照为参考基线
+   （回归检测模式：后续改切分/检索参数后跑评测，reference 不变，掉分即回归）
 
 完成后提交评测（ai-sidecar）:
     curl -X POST http://127.0.0.1:8081/evaluate -H "Content-Type: application/json" -d @data/testset.json
@@ -71,9 +72,11 @@ def build(args) -> list:
         if not contexts:
             skipped += 1
             continue
+        # ragas 0.4 字段名为 reference（旧版 ground_truth 已改名，缺失则 context_recall 恒为 0）
+        reference = contexts if args.snapshot_reference else ""
         testset.append({
             "question": query,
-            "ground_truth": "",  # 人工标注参考回答/参考文档后填入
+            "reference": reference,   # 参考上下文（人工标注或 --snapshot-reference 快照）
             "answer": answer,
             "contexts": contexts,
         })
@@ -88,6 +91,8 @@ def main():
     parser.add_argument("--output", default="data/testset.json")
     parser.add_argument("--rag-url", default="http://127.0.0.1:8080")
     parser.add_argument("--max", type=int, default=20)
+    parser.add_argument("--snapshot-reference", action="store_true",
+                        help="把当前 contexts 快照为 reference（回归基线模式）")
     args = parser.parse_args()
 
     testset = build(args)
