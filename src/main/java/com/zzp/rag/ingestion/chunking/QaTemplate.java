@@ -24,6 +24,13 @@ public class QaTemplate implements ChunkTemplate {
     /** 最少问题命中数才启用本模板（与法律条款切分阈值策略一致，避免普通文档误触发） */
     private static final int MIN_QUESTION_HITS = 5;
 
+    /**
+     * 问答对结构校验：相邻题号行的平均行间距上限。
+     * QA 文档题号紧凑（题号之间通常 1-5 行）；技术书/教材的公式、习题编号稀疏
+     * （间隔几十行推导），误触发过《南瓜书》（模板=qa 1174 chunks，全是碎片）。
+     */
+    private static final int MAX_AVG_GAP = 8;
+
     private static final Pattern[] QUESTION_PATTERNS = {
             Pattern.compile("^第([零一二三四五六七八九十百0-9]+)问[、. :：]*"),
             Pattern.compile("^第([0-9]+)问[、. :：]*"),
@@ -56,19 +63,31 @@ public class QaTemplate implements ChunkTemplate {
     @Override
     public boolean matches(ParsedDocument parsed) {
         int hits = 0;
-        for (String line : parsed.text().split("\n")) {
-            String s = line.strip();
+        int gapSum = 0;
+        int lastHitLine = -1;
+        String[] lines = parsed.text().split("\n");
+        for (int i = 0; i < lines.length; i++) {
+            String s = lines[i].strip();
             if (s.isEmpty() || NOT_BULLET.matcher(s).find() || ARTICLE.matcher(s).find()) {
                 continue;
             }
             for (Pattern p : QUESTION_PATTERNS) {
                 if (p.matcher(s).find()) {
                     hits++;
+                    if (lastHitLine >= 0) {
+                        gapSum += (i - lastHitLine);
+                    }
+                    lastHitLine = i;
                     break;
                 }
             }
         }
-        return hits >= MIN_QUESTION_HITS;
+        if (hits < MIN_QUESTION_HITS) {
+            return false;
+        }
+        // 结构校验：题号平均间距（问答对紧凑，编号类书籍稀疏）
+        double avgGap = hits > 1 ? (double) gapSum / (hits - 1) : Double.MAX_VALUE;
+        return avgGap <= MAX_AVG_GAP;
     }
 
     @Override
