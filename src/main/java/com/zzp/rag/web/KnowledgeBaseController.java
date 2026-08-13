@@ -58,18 +58,32 @@ public class KnowledgeBaseController {
             @RequestParam(defaultValue = "0") int offset,
             @RequestParam(defaultValue = "1000") int limit) {
         try {
-            QueryResp resp = milvusClient.query(QueryReq.builder()
-                    .collectionName(collectionName)
-                    .filter("id >= 0")  // Milvus query 需要 filter，id>=0 获取所有行
-                    .outputFields(java.util.List.of("document_id", "title"))
-                    .offset(offset)
-                    .limit(limit)
-                    .build());
             java.util.Map<String, DocumentInfo> docs = new java.util.LinkedHashMap<>();
-            for (QueryResp.QueryResult r : resp.getQueryResults()) {
-                String docId = (String) r.getEntity().get("document_id");
-                String title = (String) r.getEntity().get("title");
-                if (docId != null) docs.putIfAbsent(docId, new DocumentInfo(docId, title));
+            // 分页遍历全库：单次 query 有行数上限，chunk 总量超 1000 后必须翻页
+            // （历史 bug：只查前 1000 行导致列表漏文档）
+            final int pageSize = Math.min(Math.max(limit, 100), 1000);
+            long pageOffset = offset;
+            int guardPages = 0;
+            while (guardPages++ < 1000) {
+                QueryResp resp = milvusClient.query(QueryReq.builder()
+                        .collectionName(collectionName)
+                        .filter("id >= 0")  // Milvus query 需要 filter，id>=0 获取所有行
+                        .outputFields(java.util.List.of("document_id", "title"))
+                        .offset(pageOffset)
+                        .limit(pageSize)
+                        .build());
+                if (resp.getQueryResults().isEmpty()) {
+                    break;
+                }
+                for (QueryResp.QueryResult r : resp.getQueryResults()) {
+                    String docId = (String) r.getEntity().get("document_id");
+                    String title = (String) r.getEntity().get("title");
+                    if (docId != null) docs.putIfAbsent(docId, new DocumentInfo(docId, title));
+                }
+                if (resp.getQueryResults().size() < pageSize) {
+                    break;   // 最后一页
+                }
+                pageOffset += pageSize;
             }
             return ApiResponse.ok(new java.util.ArrayList<>(docs.values()));
         } catch (Exception e) {
