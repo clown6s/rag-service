@@ -73,23 +73,32 @@ public class DocumentParser {
     public ParsedDocument parse(MultipartFile file) {
         String fileName = file.getOriginalFilename();
         String text = "";
+        List<String> warnings = new ArrayList<>();
+        List<ParsedDocument.ParsedSection> sections = new ArrayList<>();
 
         try {
             if (fileName != null && fileName.toLowerCase().endsWith(".doc")
                     && !fileName.toLowerCase().endsWith(".docx")) {
-                // .doc 文件用 POI WordExtractor 直接提取
+                // .doc 文件用 POI WordExtractor 直接提取（sidecar 不支持 .doc）
                 text = parseDocWithPOI(file.getBytes());
             } else if (fileName != null && fileName.toLowerCase().endsWith(".docx")) {
-                // .docx 文件用 POI XWPFWordExtractor 直接提取
-                text = parseDocxWithPOI(file.getBytes());
+                // docx 双通道：优先 sidecar /parse（标题层级结构提取），失败降级 POI
+                try {
+                    ParsedDocument parsed = parseWithSidecar(file.getBytes(), fileName);
+                    text = parsed.text();
+                    warnings.addAll(parsed.warnings());
+                    sections = parsed.sections();
+                } catch (Exception e) {
+                    log.warn("[解析] sidecar /parse 失败，降级 POI: {}", e.getMessage());
+                    text = parseDocxWithPOI(file.getBytes());
+                }
             } else if (fileName != null && fileName.toLowerCase().endsWith(".pdf")) {
                 // PDF 双通道：优先 sidecar /parse（含扫描件检测），失败降级 Tika
                 try {
-                    ParsedDocument parsed = parsePdfWithSidecar(file.getBytes(), fileName);
+                    ParsedDocument parsed = parseWithSidecar(file.getBytes(), fileName);
                     text = parsed.text();
-                    for (String warning : parsed.warnings()) {
-                        log.warn("[解析] 文件={} sidecar警告: {}", fileName, warning);
-                    }
+                    warnings.addAll(parsed.warnings());
+                    sections = parsed.sections();
                 } catch (Exception e) {
                     log.warn("[解析] sidecar /parse 失败，降级 Tika: {}", e.getMessage());
                     text = parseWithTika(file.getInputStream());
@@ -99,11 +108,16 @@ public class DocumentParser {
                 text = parseWithTika(file.getInputStream());
             }
 
+            for (String warning : warnings) {
+                log.warn("[解析] 文件={} sidecar警告: {}", fileName, warning);
+            }
+
             // 清理多余空白
             text = text.replaceAll("\\n{3,}", "\n\n").trim();
 
             String preview = text.length() > 500 ? text.substring(0, 500) : text;
-            log.info("[解析] 文件={} 文本长度={} 预览前500字=[{}]", fileName, text.length(), preview);
+            log.info("[解析] 文件={} 文本长度={} 章节={} 预览前500字=[{}]",
+                    fileName, text.length(), sections.size(), preview);
 
             if (text.isBlank()) {
                 log.warn("[解析] 文件={} 主解析为空，尝试 Tika fallback", fileName);
@@ -114,7 +128,7 @@ public class DocumentParser {
                 }
             }
 
-            return new ParsedDocument(text, List.of(), List.of());
+            return new ParsedDocument(text, warnings, sections);
         } catch (Exception e) {
             log.error("[解析] 文件={} 解析失败", fileName, e);
             throw new IngestionException("文档解析失败: " + fileName, e);
@@ -122,10 +136,10 @@ public class DocumentParser {
     }
 
     /**
-     * 调 ai-sidecar /parse 解析 PDF
-     * 返回结构化结果；sections/tables 由 DeepDoc 视觉任务就绪后填充
+     * 调 ai-sidecar /parse 解析（PDF/DOCX）
+     * 返回结构化结果；PDF 的 sections 由 DeepDoc 布局识别就绪后填充
      */
-    private ParsedDocument parsePdfWithSidecar(byte[] bytes, String fileName) {
+    private ParsedDocument parseWithSidecar(byte[] bytes, String fileName) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
         if (sidecarToken != null && !sidecarToken.isBlank()) {
@@ -171,7 +185,7 @@ public class DocumentParser {
                 }
             }
         }
-        log.info("[解析-PDF-sidecar] 文件={} 文本长度={} 章节={} 警告={}",
+        log.info("[解析-sidecar] 文件={} 文本长度={} 章节={} 警告={}",
                 fileName, text.length(), sections.size(), warnings.size());
         return new ParsedDocument(text, warnings, sections);
     }

@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -41,26 +42,69 @@ public class ContextualChunker {
 
     /**
      * 上下文增强 + 切分
+     * <p>
+     * 解析层提供标题结构（sections≥2 且有内容）时按章节切分：
+     * 标题作为强边界，章节名注入每个 chunk 正文（检索与 LLM 都能感知 chunk 归属）；
+     * 否则走原有路径（摘要前置 + 递归句子切分，含法律条款专用切分）。
      */
-    public List<TextSegment> chunk(String rawText, String fileName) {
-        if (rawText == null) rawText = "";
+    public List<TextSegment> chunk(ParsedDocument parsed, String fileName) {
+        String rawText = parsed.text() == null ? "" : parsed.text();
         if (fileName == null) fileName = "unknown";
 
         // Step 1: LLM 生成文档级摘要
         String docSummary = generateSummary(rawText, fileName);
 
-        // Step 2: 拼接前置上下文
-        String enrichedText = "[文档: " + fileName + " | 摘要: " + docSummary + "]\n\n" + rawText;
-
-        // Step 3: 递归切分（按句子边界，保持语义完整）
-        List<TextSegment> segments = splitBySentence(enrichedText);
+        // Step 2: 选择切分策略
+        List<TextSegment> segments;
+        List<ParsedDocument.ParsedSection> sections = parsed.sections();
+        boolean sectionAware = sections != null && sections.size() >= 2 && sections.stream()
+                .anyMatch(s -> s.content() != null && !s.content().isBlank());
+        if (sectionAware) {
+            segments = chunkBySections(sections, fileName, docSummary);
+        } else {
+            String enrichedText = "[文档: " + fileName + " | 摘要: " + docSummary + "]\n\n" + rawText;
+            segments = splitBySentence(enrichedText);
+        }
 
         // 过滤空白 segment（RecursiveSentenceSplitter 可能产生纯空白片段，导致向量化报错）
         segments = segments.stream()
                 .filter(s -> s.text() != null && !s.text().isBlank())
                 .toList();
 
-        // Step 4: 注入元数据
+        // Step 3: 注入元数据
+        fillMetadata(segments, fileName, docSummary);
+
+        log.info("[切分] 文件={} chunks={} 按章节={} 摘要={}...",
+                fileName, segments.size(), sectionAware,
+                docSummary.length() > 80 ? docSummary.substring(0, 80) : docSummary);
+        return segments;
+    }
+
+    /**
+     * 按标题章节切分：标题作为强边界；章节名注入每个 chunk 正文前缀
+     * （上下文增强：向量化/BM25 检索与 LLM 回答都能感知 chunk 的章节归属）
+     */
+    private List<TextSegment> chunkBySections(
+            List<ParsedDocument.ParsedSection> sections, String fileName, String docSummary) {
+        List<TextSegment> all = new ArrayList<>();
+        for (ParsedDocument.ParsedSection section : sections) {
+            String title = section.title();
+            String sectionLabel = (title == null || title.isBlank()) ? "开头部分" : title;
+            String prefix = "[文档: " + fileName + " | 摘要: " + docSummary + "]\n"
+                    + "[章节: " + sectionLabel + "]\n\n";
+            String content = section.content() == null ? "" : section.content();
+            List<TextSegment> segs =
+                    new RecursiveSentenceSplitter(maxSegmentSize, overlapSize)
+                            .split(Document.from(prefix + content));
+            for (TextSegment seg : segs) {
+                seg.metadata().put("section", sectionLabel);
+            }
+            all.addAll(segs);
+        }
+        return all;
+    }
+
+    private void fillMetadata(List<TextSegment> segments, String fileName, String docSummary) {
         String now = LocalDateTime.now().toString();
         for (int i = 0; i < segments.size(); i++) {
             TextSegment seg = segments.get(i);
@@ -70,11 +114,6 @@ public class ContextualChunker {
             seg.metadata().put("created_at", now);
             seg.metadata().put("doc_summary", docSummary);
         }
-
-        log.info("[切分] 文件={} chunks={} 摘要={}...",
-                fileName, segments.size(),
-                docSummary.length() > 80 ? docSummary.substring(0, 80) : docSummary);
-        return segments;
     }
 
     /**

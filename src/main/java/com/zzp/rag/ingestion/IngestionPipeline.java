@@ -120,7 +120,7 @@ public class IngestionPipeline {
             updateStatus(docId, "CHUNKING", null, null);
 
             String docTitle = (title != null && !title.isBlank()) ? title : fileName;
-            List<TextSegment> chunks = chunker.chunk(rawText, docTitle);
+            List<TextSegment> chunks = chunker.chunk(parsed, docTitle);
             log.info("[摄入] 切分完成 docId={} chunks={}", docId, chunks.size());
 
             // Step 4.5: 实体抽取 + 知识图谱存储（GraphRAG）— 并行执行

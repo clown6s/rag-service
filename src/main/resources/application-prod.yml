@@ -10,16 +10,38 @@ milvus:
   username: ${MILVUS_USERNAME}
   password: ${MILVUS_PASSWORD}
 
+# ============================================================
+# 模型策略：开发用外部 API（application.yml 默认值），上线切本地推理
+# - LLM：vLLM 部署 Qwen（OpenAI 兼容协议，OpenAiChatModel 零改动，只换 base-url）
+# - Embedding：vLLM 部署 BGE-M3（维度必须 1024，与 Milvus collection 一致；切换后需向量抽检）
+# - Rerank：ai-sidecar 本地 bge-reranker（base 配置已指向 sidecar，无需覆盖）
+# 模型名以实际 vLLM 部署为准（环境变量可覆盖）
+# ============================================================
+langchain4j:
+  open-ai:
+    deepseek:
+      base-url: ${LOCAL_LLM_BASE_URL:http://127.0.0.1:8686/v1}   # vLLM（OpenAI 兼容）
+      api-key: ${LOCAL_LLM_API_KEY:none}                          # vLLM 默认无鉴权，占位即可
+      chat-model:
+        model-name: ${LOCAL_CHAT_MODEL:qwen2.5-72b-instruct}      # 对话/Agent 主力
+        temperature: 0.3
+        max-tokens: 4096
+        timeout: 60s
+      reasoner:
+        model-name: ${LOCAL_REASONER_MODEL:qwen2.5-72b-instruct}  # 意图路由（本地用思考模式/同模型）
+        temperature: 0.1
+        max-tokens: 2048
+        timeout: 120s
+  embedding:
+    # vLLM 部署 BGE-M3；切换本地前先做向量抽检（docs/architecture.md §3.1 迁移路径）
+    base-url: ${LOCAL_EMBED_BASE_URL:http://127.0.0.1:8686/v1}
+    api-key: ${LOCAL_LLM_API_KEY:none}
+    model: BAAI/bge-m3
+    dimension: 1024
+
 # 生产日志精简
 logging:
   level:
     com.jiadaojia.rag: INFO
     dev.langchain4j: WARN
     root: WARN
-
-# 生产关闭 actuator 敏感端点（若引入 actuator）
-# management:
-#   endpoints:
-#     web:
-#       exposure:
-#         include: health,info

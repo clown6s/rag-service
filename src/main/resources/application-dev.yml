@@ -1,14 +1,11 @@
 # ============================================================
-# 开发环境配置（本地开发便捷默认值）
+# 开发环境配置
 # 启动：--spring.profiles.active=dev
+# 策略：开发阶段用外部 API（DeepSeek + 硅基流动，见 application.yml 默认值），
+#       上线切本地推理（见 application-prod.yml）
+# 注意：Milvus 地址不再在此硬覆盖（历史坑：此处曾指向已下线的 10.211.55.30），
+#       统一由 application.yml + .env（MILVUS_HOST）管理
 # ============================================================
-milvus:
-  # dev 用本地/内网 Milvus
-  host: 10.211.55.30
-  port: 19530
-  # dev 不强制鉴权，便于快速调试
-  username:
-  password:
 
 # dev 日志更详细
 logging:

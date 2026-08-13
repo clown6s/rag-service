@@ -16,6 +16,21 @@
 - **团队与资产**：Java 为主（本仓库存量），Python 只承担生态决定性差距的能力
 - **扩展性**：接模型 / 技能 / 业务系统 / 数字员工 / Python 能力，均不碰核心代码
 
+### 1.1 模型策略（2026-08-13 确定）：开发用 API，上线用本地
+
+由 Spring profile 承载：base（开发）= 外部 API；`prod` profile = 本地推理（已配置）。
+
+| 能力 | 开发（API） | 上线（本地） | 切换代价 |
+|---|---|---|---|
+| 对话/Agent | DeepSeek V3 | vLLM + Qwen（OpenAI 兼容） | 零（改 base-url） |
+| 意图路由 | DeepSeek R1 | vLLM + Qwen 思考模式 | 零 |
+| 改写/摘要/抽取 | deepseek-chat | Qwen 小模型 | 零 |
+| Embedding | 硅基流动 BGE-M3 | vLLM 部署 BGE-M3（1024 维） | **重摄 + 抽检** |
+| Rerank | 硅基流动 | ai-sidecar 本地 bge-reranker | 零（✅ 已切换） |
+
+**切换规则**：LLM 类切换零成本（协议兼容 + LangChain4j 抽象）；embedding/rerank 切换 =
+向量空间变化，必须重摄 + 抽检。因此本地化顺序：rerank（✅ 完成）→ embedding（BGE-M3 上 vLLM）→ LLM（vLLM Qwen）。
+
 ## 2. 总体分层
 
 ```
@@ -30,7 +45,7 @@
 │  └─ 会话/记忆：统一 ChatMemory + 长期记忆，跨数字员工共享         │
 ├──────────────────────────────────────────────────────────────┤
 │ 能力层（Java，rag-service 内）                                 │
-│  ├─ 知识底座：摄入/混合检索/GraphRAG（现状）                    │
+│  ├─ 知识底座：摄入/混合检索/GraphRAG（标题感知切分已上线）        │
 │  ├─ 分析/文档等重型能力（未来以 MCP server 接入，不并入单体）     │
 │  └─ 业务系统连接器：OA/邮件/工单（MCP server 各出一份）           │
 ├──────────────────────────────────────────────────────────────┤
