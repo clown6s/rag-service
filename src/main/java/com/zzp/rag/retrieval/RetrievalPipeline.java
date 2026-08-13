@@ -26,6 +26,10 @@ public class RetrievalPipeline {
     @Value("${rag.retrieval.top-k:20}")
     private int topK;
 
+    /** 重排后片段的相关度分数低于该阈值则不进上下文（无关文档混入是检索精度的主要噪声源） */
+    @Value("${rag.retrieval.min-rerank-score:0.3}")
+    private double minRerankScore;
+
     public RetrievalPipeline(
             QueryRewriter queryRewriter,
             HybridRetriever hybridRetriever,
@@ -62,6 +66,19 @@ public class RetrievalPipeline {
         List<TextSegment> reranked = rerankResult.segments();
         if (rerankResult.degraded()) {
             log.warn("[检索] rerank 降级，返回原始 Top-{}", reranked.size());
+        } else if (rerankResult.topScore() != null) {
+            // Step 3.5: 无关片段过滤（小知识库中无关文档也会被召回，rerank 分数是最好的相关度信号）
+            List<TextSegment> filtered = reranked.stream()
+                    .filter(seg -> {
+                        Object score = seg.metadata().toMap().get("rerank_score");
+                        return score == null || ((Number) score).doubleValue() >= minRerankScore;
+                    })
+                    .toList();
+            if (filtered.size() < reranked.size()) {
+                log.info("[检索] 阈值过滤: {} → {} 条 (min-rerank-score={})",
+                        reranked.size(), filtered.size(), minRerankScore);
+                reranked = filtered;
+            }
         }
 
         // Step 4: 知识图谱遍历（从用户 query 提取实体，Neo4j 多跳查找关联）

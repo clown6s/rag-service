@@ -12,6 +12,7 @@ import dev.langchain4j.model.embedding.EmbeddingModel;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.vector.request.InsertReq;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -28,6 +29,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -55,6 +57,17 @@ public class IngestionPipeline {
 
     @Value("${rag.graph.extract-concurrency:8}")
     private int graphConcurrency;
+
+    /** 图谱构建开关（GraphRAG 是增强项，非检索主链路必需） */
+    @Value("${rag.graph.enabled:true}")
+    private boolean graphEnabled;
+
+    /** 图谱构建异步化：入库即 COMPLETED 可检索，图谱后台补建（大文档图构建是摄入最慢环节） */
+    @Value("${rag.graph.async:true}")
+    private boolean graphAsync;
+
+    /** 图谱后台构建线程池（异步模式专用） */
+    private ExecutorService graphExecutor;
 
     private static final int MAX_STATUS = 1000;
     private final java.util.Map<String, IngestionStatus> statusMap =
@@ -102,6 +115,23 @@ public class IngestionPipeline {
         }
     }
 
+    /** 关闭图谱后台线程池（异步图构建模式） */
+    @PreDestroy
+    public void shutdownGraphExecutor() {
+        if (graphExecutor != null) {
+            log.info("[摄入] 关闭图谱后台线程池...");
+            graphExecutor.shutdown();
+            try {
+                if (!graphExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                    graphExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                graphExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
     public String ingest(MultipartFile file, String title, String tags) {
         String docId = UUID.randomUUID().toString();
         String fileName = file.getOriginalFilename();
@@ -123,33 +153,13 @@ public class IngestionPipeline {
             List<TextSegment> chunks = chunker.chunk(parsed, docTitle);
             log.info("[摄入] 切分完成 docId={} chunks={}", docId, chunks.size());
 
-            // Step 4.5: 实体抽取 + 知识图谱存储（GraphRAG）— 并行执行
-            updateStatus(docId, "GRAPH_EXTRACT", null, null);
-            int totalChunks = chunks.size();
-            ExecutorService executor = Executors.newFixedThreadPool(
-                    Math.min(graphConcurrency, totalChunks));
-            List<CompletableFuture<Void>> futures = new ArrayList<>(totalChunks);
-            AtomicInteger done = new AtomicInteger(0);
-
-            for (int i = 0; i < totalChunks; i++) {
-                final int idx = i;
-                final String chunkText = chunks.get(i).text();
-                futures.add(CompletableFuture.runAsync(() -> {
-                    try {
-                        var graphData = entityExtractor.extract(chunkText, docId, idx);
-                        graphStore.save(graphData, docId, idx);
-                    } catch (Exception e) {
-                        log.warn("[摄入] 实体抽取失败 docId={} chunk={}: {}", docId, idx, e.getMessage());
-                    }
-                    int completed = done.incrementAndGet();
-                    if (completed % 10 == 0 || completed == totalChunks) {
-                        log.info("[摄入] 图构建进度 docId={} {}/{}", docId, completed, totalChunks);
-                    }
-                }, executor));
+            // Step 4.5: 实体抽取 + 知识图谱存储（GraphRAG）
+            // 异步模式：入库即完成，图谱后台补建（图构建是大文档摄入最慢环节，LLM 逐 chunk 调用）
+            if (graphEnabled && graphAsync) {
+                submitGraphBuildAsync(chunks, docId);
+            } else if (graphEnabled) {
+                buildGraphSync(chunks, docId);
             }
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-            executor.shutdown();
-            log.info("[摄入] 图构建完成 docId={} chunks={}", docId, totalChunks);
 
             updateStatus(docId, "EMBEDDING", null, null);
             List<Embedding> embeddings = batchEmbed(chunks);
@@ -184,6 +194,69 @@ public class IngestionPipeline {
             updateStatus(docId, "FAILED", null, e.getMessage());
             throw e;
         }
+    }
+
+    /**
+     * 同步构建图谱（rag.graph.async=false 时）：实体抽取 + Neo4j 存储，逐 chunk 并行
+     */
+    private void buildGraphSync(List<TextSegment> chunks, String docId) {
+        updateStatus(docId, "GRAPH_EXTRACT", null, null);
+        int totalChunks = chunks.size();
+        ExecutorService executor = Executors.newFixedThreadPool(
+                Math.min(graphConcurrency, totalChunks));
+        try {
+            runGraphBuild(chunks, docId, executor);
+        } finally {
+            executor.shutdown();
+        }
+        log.info("[摄入] 图构建完成 docId={} chunks={}", docId, totalChunks);
+    }
+
+    /**
+     * 异步构建图谱（默认）：入库即完成，图谱后台补建
+     * 图谱是检索增强项——检索主链路（向量+BM25）不依赖它，失败只告警不影响可用性
+     */
+    private void submitGraphBuildAsync(List<TextSegment> chunks, String docId) {
+        if (graphExecutor == null || graphExecutor.isShutdown()) {
+            graphExecutor = Executors.newFixedThreadPool(graphConcurrency, r -> {
+                Thread t = new Thread(r, "graph-build");
+                t.setDaemon(true);
+                return t;
+            });
+        }
+        // 快照 chunk 文本（TextSegment 后续可能被并发修改）
+        List<String> texts = chunks.stream().map(TextSegment::text).toList();
+        int totalChunks = texts.size();
+        graphExecutor.execute(() -> {
+            log.info("[摄入] 图构建开始(异步) docId={} chunks={}", docId, totalChunks);
+            List<TextSegment> snapshot = texts.stream().map(TextSegment::from).toList();
+            runGraphBuild(snapshot, docId, graphExecutor);
+            log.info("[摄入] 图构建完成(异步) docId={} chunks={}", docId, totalChunks);
+        });
+    }
+
+    /** 图构建核心循环：逐 chunk 实体抽取 + 存图（并行，单 chunk 失败不阻断） */
+    private void runGraphBuild(List<TextSegment> chunks, String docId, ExecutorService executor) {
+        int totalChunks = chunks.size();
+        List<CompletableFuture<Void>> futures = new ArrayList<>(totalChunks);
+        AtomicInteger done = new AtomicInteger(0);
+        for (int i = 0; i < totalChunks; i++) {
+            final int idx = i;
+            final String chunkText = chunks.get(i).text();
+            futures.add(CompletableFuture.runAsync(() -> {
+                try {
+                    var graphData = entityExtractor.extract(chunkText, docId, idx);
+                    graphStore.save(graphData, docId, idx);
+                } catch (Exception e) {
+                    log.warn("[摄入] 实体抽取失败 docId={} chunk={}: {}", docId, idx, e.getMessage());
+                }
+                int completed = done.incrementAndGet();
+                if (completed % 10 == 0 || completed == totalChunks) {
+                    log.info("[摄入] 图构建进度 docId={} {}/{}", docId, completed, totalChunks);
+                }
+            }, executor));
+        }
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
     }
 
     public IngestionStatus getStatus(String docId) {

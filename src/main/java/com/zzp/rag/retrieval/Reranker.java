@@ -126,6 +126,9 @@ public class Reranker {
                     int idx = ((Number) r.get("index")).intValue();
                     if (idx < 0 || idx >= candidates.size()) return null;
                     TextSegment seg = candidates.get(idx);
+                    // 分数写入 metadata，供检索链路按阈值过滤无关片段（检索精度修复）
+                    seg.metadata().put("rerank_score",
+                            ((Number) r.get("relevance_score")).doubleValue());
                     log.debug("[Rerank] idx={} score={} source={}",
                             idx, r.get("relevance_score"),
                             seg.metadata().getString("source"));

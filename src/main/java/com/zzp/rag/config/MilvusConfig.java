@@ -6,6 +6,7 @@ import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.common.ConsistencyLevel;
 import io.milvus.v2.common.DataType;
 import io.milvus.v2.common.IndexParam;
+import io.milvus.v2.service.database.request.CreateDatabaseReq;
 import io.milvus.v2.service.collection.request.AddFieldReq;
 import io.milvus.v2.service.collection.request.CreateCollectionReq;
 import io.milvus.v2.service.collection.request.HasCollectionReq;
@@ -79,9 +80,58 @@ public class MilvusConfig {
         } else {
             log.warn("[Milvus] 未配置鉴权，生产建议开启 RBAC");
         }
-        MilvusClientV2 client = new MilvusClientV2(builder.build());
-        ensureCollectionExists(client);
-        return client;
+        // 启动重试：扛住 Milvus 容器重启/瞬时抖动（连接超时约 10s，重试 3 次 × 间隔 15s）
+        Exception lastError = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                ensureDatabaseExists();
+                MilvusClientV2 client = new MilvusClientV2(builder.build());
+                ensureCollectionExists(client);
+                return client;
+            } catch (Exception e) {
+                lastError = e;
+                log.warn("[Milvus] 连接失败（第 {} 次）: {}", attempt, e.getMessage());
+                if (attempt < 3) {
+                    try {
+                        Thread.sleep(15_000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        throw new IllegalStateException(
+                "Milvus 连接失败（已重试 3 次）: " + (lastError != null ? lastError.getMessage() : ""),
+                lastError);
+    }
+
+    /**
+     * 确保业务数据库存在（全新部署的 Milvus 只有 default 库，
+     * 连接不存在的库会报 database not found —— 重装后无需手动建库）
+     */
+    private void ensureDatabaseExists() {
+        ConnectConfig initConfig = ConnectConfig.builder()
+                .uri("http://" + host + ":" + port)
+                .dbName("default")
+                .build();
+        MilvusClientV2 initClient = new MilvusClientV2(initConfig);
+        try {
+            List<String> databases = initClient.listDatabases().getDatabaseNames();
+            if (!databases.contains(database)) {
+                initClient.createDatabase(CreateDatabaseReq.builder()
+                        .databaseName(database).build());
+                log.info("[Milvus] 已创建数据库: {}", database);
+            }
+        } catch (Exception e) {
+            log.warn("[Milvus] 检查/创建数据库 {} 失败（忽略，可能已存在或版本不支持）: {}",
+                    database, e.getMessage());
+        } finally {
+            try {
+                initClient.close();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     /**

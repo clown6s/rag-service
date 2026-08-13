@@ -94,6 +94,7 @@ rag:
     final-k: 15               # Rerank 后保留数（10→15，让更多文档进入上下文）
     rrf-k: 60                 # RRF 融合平滑常数（论文经验值，40-80 均可）
     hnsw-ef: 128              # HNSW 搜索时探索宽度（≥ top-k*2，越大召回率越高但越慢）
+    min-rerank-score: 0.3     # 重排后低于该分数的片段不进上下文（无关文档过滤；rerank 降级时跳过）
   rerank:
     model: BAAI/bge-reranker-v2-m3
     # ai-sidecar（本地 bge-reranker，协议兼容硅基流动）；切回硅基流动：https://api.siliconflow.cn/v1/rerank
@@ -106,6 +107,9 @@ rag:
     fallback-api-key: ${SILICONFLOW_API_KEY:}
   graph:
     max-hops: 2               # 图遍历最大跳数（越大越深但越慢）
+    enabled: true             # 图谱构建开关（GraphRAG 增强项，关闭不影响检索主链路）
+    async: true               # 异步构建：文档入库即 COMPLETED 可检索，图谱后台补建（大文档摄入提速的关键）
+    extract-concurrency: 8    # 实体抽取并发（受 LLM 速率限制约束）
   rewrite:
     multi-query-count: 3
   agent:
