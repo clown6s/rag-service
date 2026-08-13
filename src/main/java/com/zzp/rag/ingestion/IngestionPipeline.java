@@ -109,8 +109,14 @@ public class IngestionPipeline {
         updateStatus(docId, "PARSING", null, null);
 
         try {
-            String rawText = parser.parse(file);
-            log.info("[摄入] 解析完成 docId={} textLen={}", docId, rawText.length());
+            ParsedDocument parsed = parser.parse(file);
+            String rawText = parsed.text();
+            for (String warning : parsed.warnings()) {
+                log.warn("[摄入] 解析警告 docId={} {}", docId, warning);
+            }
+            // sections 暂未用于切分（标题感知切分是下一步优化，见 docs/architecture.md）
+            log.info("[摄入] 解析完成 docId={} textLen={} sections={}",
+                    docId, rawText.length(), parsed.sections().size());
             updateStatus(docId, "CHUNKING", null, null);
 
             String docTitle = (title != null && !title.isBlank()) ? title : fileName;

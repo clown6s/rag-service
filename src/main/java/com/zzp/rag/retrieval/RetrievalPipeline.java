@@ -71,7 +71,8 @@ public class RetrievalPipeline {
         log.info("[检索] 完成: {} 条, 图上下文 {}chars, 耗时 {}ms",
                 reranked.size(), graphContext.length(), elapsed);
 
-        return new PipelineResult(reranked, rewritten, graphContext, elapsed, rerankResult.degraded());
+        return new PipelineResult(reranked, rewritten, graphContext, elapsed,
+                rerankResult.degraded(), rerankResult.topScore());
     }
 
     /**
@@ -115,7 +116,8 @@ public class RetrievalPipeline {
             QueryRewriter.RewriteResult rewriteInfo,
             String graphContext,
             long elapsedMs,
-            boolean rerankDegraded) {
+            boolean rerankDegraded,
+            Double topScore) {
 
         /** 返回去重文件名列表（用于 parseCitedSources 匹配 LLM 引用的文件名） */
         public List<String> getIndexedSources() {

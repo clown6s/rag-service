@@ -17,19 +17,30 @@ import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.Parser;
 import org.apache.tika.sax.BodyContentHandler;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.*;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 import org.xml.sax.SAXException;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 /**
- * 文档解析器
+ * 文档解析器（双通道）
  * <p>
  * .doc  → Apache POI HWPFDocument + WordExtractor（直接底层提取，比 Tika 更完整）
  * .docx → Apache POI XWPFDocument + XWPFWordExtractor
+ * .pdf  → ai-sidecar /parse（PyMuPDF 文本提取 + 扫描件检测），失败/未部署降级 Tika（软依赖）
  * 其他   → Apache Tika AutoDetectParser
  * <p>
  * 关键修复：Tika parseToString/AutoDetectParser 对某些 .doc 文件会丢失内容
@@ -41,11 +52,25 @@ public class DocumentParser {
 
     private final Tika tika = new Tika();
     private final Parser autoDetectParser = new AutoDetectParser();
+    private final RestTemplate restTemplate;
+
+    @Value("${rag.parse.sidecar-url:http://127.0.0.1:8081}")
+    private String sidecarUrl;
+
+    @Value("${rag.parse.sidecar-token:${AISIDECAR_TOKEN:}}")
+    private String sidecarToken;
+
+    public DocumentParser() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);
+        factory.setReadTimeout(120_000);   // PDF 大文件解析较慢，放宽读超时
+        this.restTemplate = new RestTemplate(factory);
+    }
 
     /**
-     * 从上传文件提取纯文本（全量提取，不截断）
+     * 从上传文件提取结构化解析结果（全量提取，不截断）
      */
-    public String parse(MultipartFile file) {
+    public ParsedDocument parse(MultipartFile file) {
         String fileName = file.getOriginalFilename();
         String text = "";
 
@@ -57,6 +82,18 @@ public class DocumentParser {
             } else if (fileName != null && fileName.toLowerCase().endsWith(".docx")) {
                 // .docx 文件用 POI XWPFWordExtractor 直接提取
                 text = parseDocxWithPOI(file.getBytes());
+            } else if (fileName != null && fileName.toLowerCase().endsWith(".pdf")) {
+                // PDF 双通道：优先 sidecar /parse（含扫描件检测），失败降级 Tika
+                try {
+                    ParsedDocument parsed = parsePdfWithSidecar(file.getBytes(), fileName);
+                    text = parsed.text();
+                    for (String warning : parsed.warnings()) {
+                        log.warn("[解析] 文件={} sidecar警告: {}", fileName, warning);
+                    }
+                } catch (Exception e) {
+                    log.warn("[解析] sidecar /parse 失败，降级 Tika: {}", e.getMessage());
+                    text = parseWithTika(file.getInputStream());
+                }
             } else {
                 // 其他格式用 Tika
                 text = parseWithTika(file.getInputStream());
@@ -77,11 +114,66 @@ public class DocumentParser {
                 }
             }
 
-            return text;
+            return new ParsedDocument(text, List.of(), List.of());
         } catch (Exception e) {
             log.error("[解析] 文件={} 解析失败", fileName, e);
             throw new IngestionException("文档解析失败: " + fileName, e);
         }
+    }
+
+    /**
+     * 调 ai-sidecar /parse 解析 PDF
+     * 返回结构化结果；sections/tables 由 DeepDoc 视觉任务就绪后填充
+     */
+    private ParsedDocument parsePdfWithSidecar(byte[] bytes, String fileName) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        if (sidecarToken != null && !sidecarToken.isBlank()) {
+            headers.setBearerAuth(sidecarToken);
+        }
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("file", new ByteArrayResource(bytes) {
+            @Override
+            public String getFilename() {
+                return fileName;
+            }
+        });
+        HttpEntity<MultiValueMap<String, Object>> entity = new HttpEntity<>(body, headers);
+
+        @SuppressWarnings("rawtypes")
+        ResponseEntity<Map> resp = restTemplate.exchange(
+                sidecarUrl + "/parse", HttpMethod.POST, entity, Map.class);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> json = (Map<String, Object>) resp.getBody();
+        if (json == null) {
+            throw new IllegalStateException("sidecar /parse 响应为空");
+        }
+        String text = json.getOrDefault("text", "").toString();
+        List<String> warnings = new ArrayList<>();
+        Object warningsObj = json.get("warnings");
+        if (warningsObj instanceof List<?> list) {
+            for (Object w : list) {
+                warnings.add(String.valueOf(w));
+            }
+        }
+        List<ParsedDocument.ParsedSection> sections = new ArrayList<>();
+        Object sectionsObj = json.get("sections");
+        if (sectionsObj instanceof List<?> list) {
+            for (Object s : list) {
+                if (s instanceof Map<?, ?> raw) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> m = (Map<String, Object>) raw;
+                    sections.add(new ParsedDocument.ParsedSection(
+                            ((Number) m.getOrDefault("level", 1)).intValue(),
+                            String.valueOf(m.getOrDefault("title", "")),
+                            String.valueOf(m.getOrDefault("content", ""))));
+                }
+            }
+        }
+        log.info("[解析-PDF-sidecar] 文件={} 文本长度={} 章节={} 警告={}",
+                fileName, text.length(), sections.size(), warnings.size());
+        return new ParsedDocument(text, warnings, sections);
     }
 
     /**
@@ -101,7 +193,6 @@ public class DocumentParser {
             // 2. 手动遍历 Range 补充表格内容（WordExtractor 有时漏掉表格内文字）
             try {
                 Range range = doc.getRange();
-                System.out.println("range = " + range.text());
                 int tableCount = 0;
                 StringBuilder tableText = new StringBuilder();
                 for (int i = 0; i < range.numParagraphs(); i++) {
@@ -148,7 +239,7 @@ public class DocumentParser {
     }
 
     /**
-     * 用 Tika 解析其他格式（PDF、TXT、MD、HTML）
+     * 用 Tika 解析其他格式（TXT、MD、HTML 及 PDF 降级路径）
      */
     private String parseWithTika(InputStream in) throws IOException, TikaException, SAXException {
         BodyContentHandler handler = new BodyContentHandler(-1);

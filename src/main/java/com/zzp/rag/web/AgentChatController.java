@@ -77,6 +77,10 @@ public class AgentChatController {
         AuditContext ctx = AuditContext.capture();
         try {
             AgentOrchestrator.AgentAnswer result = orchestrator.answer(conversationId, req.query());
+            // 整段格式修复（与固定流水线端点一致的兜底）
+            result = new AgentOrchestrator.AgentAnswer(
+                    StreamTokenFixer.fixFull(result.answer()),
+                    result.sources(), result.route(), result.rerankDegraded());
             auditService.record(buildAuditEvent(req, result, ctx,
                     System.currentTimeMillis() - start, "SUCCESS", null));
             return ApiResponse.ok(new AgentChatResponse(
@@ -103,6 +107,8 @@ public class AgentChatController {
         executor.execute(() -> {
             long start = System.currentTimeMillis();
             StringBuilder fullAnswer = new StringBuilder();
+            // 检索被调用且一无所获时，抑制模型输出，用固定句式兜底（每次工具执行后刷新）
+            final boolean[] suppressTokens = {false};
             try {
                 orchestrator.answerStream(conversationId, req.query(), new AgentStreamHandler() {
                     @Override
@@ -116,17 +122,23 @@ public class AgentChatController {
 
                     @Override
                     public void onToken(String token) {
-                        fullAnswer.append(token);
+                        if (suppressTokens[0]) {
+                            return; // 检索空手而归，丢弃模型输出（不追加也不下发）
+                        }
+                        // token 级格式修复（与固定流水线端点一致），修复后再下发给前端
+                        String fixed = StreamTokenFixer.fix(token, fullAnswer);
+                        fullAnswer.append(fixed);
                         try {
-                            emitter.send(SseEmitter.event().name("token").data(token));
+                            emitter.send(SseEmitter.event().name("token").data(fixed));
                         } catch (IOException e) {
                             emitter.completeWithError(e);
                         }
                     }
 
                     @Override
-                    public void onToolExecuted(String toolName, String arguments) {
-                        log.info("[Agent][SSE] 工具执行: {} {}", toolName, arguments);
+                    public void onToolExecuted(String toolName, String arguments, boolean retrievalEmpty) {
+                        log.info("[Agent][SSE] 工具执行: {} {} retrievalEmpty={}", toolName, arguments, retrievalEmpty);
+                        suppressTokens[0] = retrievalEmpty;
                         try {
                             emitter.send(SseEmitter.event().name("tool")
                                     .data(Map.of("tool", toolName, "arguments", arguments)));
@@ -138,6 +150,11 @@ public class AgentChatController {
                     @Override
                     public void onComplete(String route, List<String> sources, boolean degraded) {
                         try {
+                            if (suppressTokens[0]) {
+                                // 兜底句式作为唯一 token 下发
+                                fullAnswer.append(AgentOrchestrator.NO_ANSWER);
+                                emitter.send(SseEmitter.event().name("token").data(AgentOrchestrator.NO_ANSWER));
+                            }
                             emitter.send(SseEmitter.event().name("sources").data(sources));
                             emitter.send(SseEmitter.event()
                                     .name("done")

@@ -15,10 +15,14 @@ import java.util.List;
  * ROUTE → 意图路由（deepseek-reasoner，纯文本输出分类；R1 不支持 function calling，故用 chat + 解析）
  *   ├─ CHAT         → 直接对话（不检索、不调工具，省一次工具循环开销）
  *   └─ KNOWLEDGE_QA → AgentService 工具循环（是否检索、检索几次由 LLM 决策）
+ * 确定性兜底：检索被调用且一无所获时，用固定句式替换 LLM 输出（提示词约束不可靠）。
  */
 @Slf4j
 @Component
 public class AgentOrchestrator {
+
+    /** 检索无结果时的确定性兜底回答（不信任 LLM 输出，见 AgentTools#isRetrievalEmpty） */
+    public static final String NO_ANSWER = "根据现有资料，暂无法回答该问题";
 
     private final ChatModel chatModel;
     private final StreamingChatModel streamingChatModel;
@@ -45,7 +49,7 @@ public class AgentOrchestrator {
     public interface AgentStreamHandler {
         void onRoute(String route);
         void onToken(String token);
-        void onToolExecuted(String toolName, String arguments);
+        void onToolExecuted(String toolName, String arguments, boolean retrievalEmpty);
         void onComplete(String route, List<String> sources, boolean rerankDegraded);
         void onError(Throwable error);
     }
@@ -58,9 +62,19 @@ public class AgentOrchestrator {
         if ("CHAT".equals(route)) {
             return new AgentAnswer(chatDirect(query), List.of(), route, false);
         }
-        String answer = agentService.chat(conversationId, query);
-        return new AgentAnswer(answer, agentTools.getSources(conversationId), route,
-                agentTools.isRerankDegraded(conversationId));
+        try {
+            String answer = agentService.chat(conversationId, query);
+            boolean retrievalEmpty = agentTools.isRetrievalEmpty();
+            log.info("[Agent] 检索空判定: empty={}, sources={}", retrievalEmpty, agentTools.getSources());
+            if (retrievalEmpty) {
+                log.info("[Agent] 检索无结果，使用确定性兜底回答");
+                answer = NO_ANSWER;
+            }
+            return new AgentAnswer(answer, agentTools.getSources(), route,
+                    agentTools.isRerankDegraded());
+        } finally {
+            agentTools.clear();
+        }
     }
 
     // ==================== 流式 ====================
@@ -89,14 +103,32 @@ public class AgentOrchestrator {
             });
             return;
         }
+        // 工具执行回调与工具执行同线程，此处读取 ThreadLocal 状态并快照，
+        // 供 onCompleteResponse（可能在其他线程）使用
+        final List<String>[] sourcesHolder = (List<String>[]) new List[]{List.of()};
+        final boolean[] degradedHolder = {false};
         agentService.chatStream(conversationId, query)
                 .onPartialResponse(handler::onToken)
-                .onToolExecuted(req -> handler.onToolExecuted(
-                        req.request().name(), req.request().arguments()))
-                .onCompleteResponse(resp -> handler.onComplete(route,
-                        agentTools.getSources(conversationId),
-                        agentTools.isRerankDegraded(conversationId)))
-                .onError(handler::onError)
+                .onToolExecuted(req -> {
+                    boolean empty = agentTools.isRetrievalEmpty();
+                    sourcesHolder[0] = agentTools.getSources();
+                    degradedHolder[0] = agentTools.isRerankDegraded();
+                    handler.onToolExecuted(req.request().name(), req.request().arguments(), empty);
+                })
+                .onCompleteResponse(resp -> {
+                    try {
+                        handler.onComplete(route, sourcesHolder[0], degradedHolder[0]);
+                    } finally {
+                        agentTools.clear();
+                    }
+                })
+                .onError(err -> {
+                    try {
+                        handler.onError(err);
+                    } finally {
+                        agentTools.clear();
+                    }
+                })
                 .start();
     }
 

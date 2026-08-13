@@ -2,33 +2,38 @@ package com.zzp.rag.agent;
 
 import com.zzp.rag.graph.GraphRetriever;
 import com.zzp.rag.retrieval.RetrievalPipeline;
-import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.P;
-import dev.langchain4j.service.MemoryId;
+import dev.langchain4j.agent.tool.Tool;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Agent 工具集 — 把检索能力暴露给 LLM 决策循环
  * <p>
  * 设计：工具只做"文本进、结果出"，LLM 决定要不要调、调几次（对比固定流水线每次无脑跑全链路）。
- * 通过 @MemoryId 拿到会话 ID，记录最近一次检索的来源与降级状态，供响应返回前端展示与审计。
+ * <p>
+ * 状态记录用 ThreadLocal 而非 @MemoryId：实测 LangChain4j 1.17 的 @MemoryId 注入到
+ * 独立工具类时拿到的不是 AI 服务的 memory id，而是占位串 "current"，无法作为会话 key。
+ * 工具执行与编排器调用同线程，ThreadLocal 天然按一次调用隔离，编排器读完后清理。
  */
 @Slf4j
 @Component
 public class AgentTools {
 
-    /** 单次会话最近一次检索的产物（供响应/审计使用，非业务数据） */
-    private record SearchRecord(List<String> sources, boolean rerankDegraded) {}
-
-    private static final int MAX_SESSIONS = 10_000;
+    /** 一次 Agent 调用的工具执行状态（供响应/审计/兜底判断使用，非业务数据） */
+    private record SearchRecord(List<String> sources, boolean rerankDegraded,
+                                boolean searchCalled, boolean graphFound, Double topScore) {}
 
     private final RetrievalPipeline retrievalPipeline;
     private final GraphRetriever graphRetriever;
-    private final ConcurrentHashMap<String, SearchRecord> lastSearch = new ConcurrentHashMap<>();
+    private final ThreadLocal<SearchRecord> localSearch = new ThreadLocal<>();
+
+    /** 最高相关度分数低于该阈值视为"未命中"（bge-reranker sigmoid 分数 0-1） */
+    @Value("${rag.agent.min-relevance-score:0.3}")
+    private double minRelevanceScore;
 
     public AgentTools(RetrievalPipeline retrievalPipeline, GraphRetriever graphRetriever) {
         this.retrievalPipeline = retrievalPipeline;
@@ -40,10 +45,13 @@ public class AgentTools {
      * LLM 判断用户问题需要资料支撑时调用，可多次调用补充信息
      */
     @Tool("检索知识库，返回相关文档片段。用户问知识性/事实性问题时调用，可多次调用补充信息")
-    public String searchKnowledgeBase(@MemoryId String conversationId, @P("检索查询词") String query) {
+    public String searchKnowledgeBase(@P("检索查询词") String query) {
         log.info("[AgentTool] 检索知识库: {}", query);
         var result = retrievalPipeline.execute(query, null);
-        remember(conversationId, new SearchRecord(result.getSources(), result.rerankDegraded()));
+        SearchRecord prev = localSearch.get();
+        localSearch.set(new SearchRecord(
+                result.getSources(), result.rerankDegraded(), true,
+                prev != null && prev.graphFound(), result.topScore()));
         return retrievalPipeline.buildContext(result, 3000);
     }
 
@@ -51,26 +59,49 @@ public class AgentTools {
     @Tool("查询知识图谱：用户问实体关系类问题（X和Y什么关系、X关联了谁）时调用")
     public String queryEntityGraph(@P("实体名称或关系查询") String query) {
         log.info("[AgentTool] 查询图谱: {}", query);
-        return graphRetriever.expand(query);
+        String result = graphRetriever.expand(query);
+        boolean graphFound = result != null && !result.isBlank();
+        SearchRecord prev = localSearch.get();
+        localSearch.set(new SearchRecord(
+                prev != null ? prev.sources() : List.of(),
+                prev != null && prev.rerankDegraded(),
+                prev != null && prev.searchCalled(),
+                graphFound,
+                prev != null ? prev.topScore() : null));
+        return result;
     }
 
     /** 取最近一次检索命中的来源文件（响应返回给前端展示） */
-    public List<String> getSources(String conversationId) {
-        SearchRecord record = lastSearch.get(conversationId);
+    public List<String> getSources() {
+        SearchRecord record = localSearch.get();
         return record != null ? record.sources() : List.of();
     }
 
     /** 最近一次检索是否发生 rerank 降级（审计用） */
-    public boolean isRerankDegraded(String conversationId) {
-        SearchRecord record = lastSearch.get(conversationId);
+    public boolean isRerankDegraded() {
+        SearchRecord record = localSearch.get();
         return record != null && record.rerankDegraded();
     }
 
-    private void remember(String conversationId, SearchRecord record) {
-        if (lastSearch.size() > MAX_SESSIONS) {
-            log.warn("[AgentTool] 会话记录超过 {} 条，清空（仅影响来源展示，不影响会话记忆）", MAX_SESSIONS);
-            lastSearch.clear();
+    /**
+     * 检索被调用过且未命中相关内容：
+     * 无文档命中（且图谱无内容），或最高相关度分数低于阈值（召回非空但不相关，小知识库常见）
+     * 此时 LLM 输出不可信（会倾向补充自身知识），编排器应使用固定句式兜底
+     */
+    public boolean isRetrievalEmpty() {
+        SearchRecord record = localSearch.get();
+        if (record == null || !record.searchCalled() || record.graphFound()) {
+            return false;
         }
-        lastSearch.put(conversationId, record);
+        if (record.sources().isEmpty()) {
+            return true;
+        }
+        // topScore 为 null 说明 rerank 双通道均失败（无法判定相关性），此时不触发兜底
+        return record.topScore() != null && record.topScore() < minRelevanceScore;
+    }
+
+    /** 清理本次调用的状态（编排器在一次调用结束后调用） */
+    public void clear() {
+        localSearch.remove();
     }
 }

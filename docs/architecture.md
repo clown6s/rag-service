@@ -35,8 +35,9 @@
 │  └─ 业务系统连接器：OA/邮件/工单（MCP server 各出一份）           │
 ├──────────────────────────────────────────────────────────────┤
 │ AI 原子能力层（Python ai-sidecar，可横向多实例）                 │
+│  ├─ 文档解析(/parse)：PyMuPDF 文本 + 扫描件检测（已接入）          │
 │  ├─ embedding/rerank（本地 BGE）· 评测(Ragas) · 模型服务(vLLM)   │
-│  └─ 未来：OCR/语音/前沿编排实验                                  │
+│  └─ 未来：DeepDoc OCR/表格/布局 · 语音 · 前沿编排实验             │
 ├──────────────────────────────────────────────────────────────┤
 │ 数据层：Milvus · Neo4j · MinIO · MySQL(业务库,平台化引入) · Redis│
 └──────────────────────────────────────────────────────────────┘
@@ -119,6 +120,7 @@ OpenAI 兼容。协议层已统一，网关接入零适配。
 - **降级可视化**：Reranker/网关 fallback 发生时必须打 WARN + 指标（当前已有日志，缺指标）
 - **安全整改**：`application.yml` 中 Neo4j 密码硬编码（`application.yml:75`）改为 `${NEO4J_PASSWORD}` 并轮换
 - **落地进度（2026-08-13）**：已实现 traceId 过滤器（`TraceIdFilter`，X-Trace-Id 透传 + MDC）与审计事件落盘（`AuditService` → `logs/audit/audit-YYYY-MM-DD.jsonl`，异步写入不阻塞链路，事件含 query/来源/检索耗时/rerank 降级标记/回答预览）；审计聚合入库、看板、告警待建（阶段 2，需先引入业务库）
+- **Agent 可靠性（2026-08-13）**：rerank 双通道落地（ai-sidecar 主通道 + 硅基流动降级，主通道挂掉自动切换）；Agent 确定性兜底——检索被调用且最高相关度低于 `rag.agent.min-relevance-score`（默认 0.3）时，固定输出"根据现有资料，暂无法回答该问题"，不信任 LLM 输出（提示词约束实测不可靠）
 
 ## 5. 单体演进与部署形态
 
@@ -158,7 +160,7 @@ OpenAI 兼容。协议层已统一，网关接入零适配。
 | 业务库 | MySQL + MyBatis-Plus（平台化阶段引入） | 技能/数字员工配置/审计聚合 |
 | 模型网关 | New-API（备选 One-API），按需启用 | OpenAI 兼容，内网自建 |
 | 模型服务 | vLLM + Qwen（私有底座 8686） | OpenAI 兼容 API，Java 直连 HTTP |
-| AI 边车 | Python 3.11 / FastAPI / sentence-transformers / Ragas | ai-sidecar（独立仓库），协议兼容优先 |
+| AI 边车 | Python 3.11 / FastAPI / PyMuPDF / sentence-transformers / Ragas | ai-sidecar（独立仓库）：/rerank（双通道降级）、/parse（PDF 解析，DeepDoc 视觉任务待部署） |
 | 连接器 | MCP（LangChain4j MCP client） | 业务系统接入唯一标准 |
 | 会话 | Redis + ChatMemory（待引入） | 跨数字员工共享 |
 | 异步 | 自研队列（审计已用）；RocketMQ 按需引入 | 评测、批量任务 |

@@ -85,6 +85,10 @@ rag:
     overlap-size: 50
   ingestion:
     status-file: data/ingestion-status.json  # 摄入状态持久化文件路径
+  parse:
+    # PDF 解析双通道：优先 ai-sidecar /parse（PyMuPDF 文本提取 + 扫描件检测），失败/未部署降级 Tika
+    sidecar-url: http://127.0.0.1:8081
+    sidecar-token: ${AISIDECAR_TOKEN:}
   retrieval:
     top-k: 20                 # 混合检索召回数
     final-k: 15               # Rerank 后保留数（10→15，让更多文档进入上下文）
@@ -94,8 +98,12 @@ rag:
     model: BAAI/bge-reranker-v2-m3
     # ai-sidecar（本地 bge-reranker，协议兼容硅基流动）；切回硅基流动：https://api.siliconflow.cn/v1/rerank
     api-url: http://127.0.0.1:8081/rerank
+    # 主通道失败时的降级通道（sidecar 未部署时仍可重排并产出相关度分数，供 Agent 兜底判定）
+    fallback-api-url: https://api.siliconflow.cn/v1/rerank
     # sidecar 鉴权 token；sidecar 未配 AISIDECAR_TOKEN 时留空即可
     api-key: ${AISIDECAR_TOKEN:}
+    # 降级通道（硅基流动）鉴权
+    fallback-api-key: ${SILICONFLOW_API_KEY:}
   graph:
     max-hops: 2               # 图遍历最大跳数（越大越深但越慢）
   rewrite:
@@ -103,6 +111,7 @@ rag:
   agent:
     max-sequential-tool-invocations: 5   # 单轮最多连续工具调用次数（防死循环）
     memory-max-messages: 12              # 服务端会话记忆窗口（按 conversationId 隔离）
+    min-relevance-score: 0.3             # rerank 最高分低于该值视为检索未命中（触发确定性兜底回答）
   audit:
     enabled: true              # 审计事件写入 logs/audit/audit-YYYY-MM-DD.jsonl（异步，不阻塞链路）
     log-dir: logs/audit
