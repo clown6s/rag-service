@@ -46,7 +46,7 @@ langchain4j:
       contextual:
         model-name: qwen-turbo           # 文档摘要
       graph:
-        model-name: qwen-turbo           # 实体抽取
+        model-name: qwen-plus            # 实体抽取（turbo 的 JSON 生成不稳定，频繁截断）
 
   # Embedding
   embedding:
