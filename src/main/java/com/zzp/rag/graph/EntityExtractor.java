@@ -57,9 +57,14 @@ public class EntityExtractor {
                 }
             } catch (Exception e) {
                 if (attempt >= maxAttempts) {
+                    // 截断 JSON 抢救：正则捞回完整对象（偶发提前停止生成，丢弃太可惜）
+                    // 抢救成功只打 INFO（不再告警），真正丢失才 WARN
+                    GraphData salvaged = salvage(lastJson, docId, chunkIndex);
+                    if (!salvaged.entities().isEmpty()) {
+                        return salvaged;
+                    }
                     log.warn("[实体抽取] 失败 docId={} chunk={}: {}", docId, chunkIndex, e.getMessage());
-                    // 截断 JSON 抢救：正则捞回完整对象（qwen-turbo 偶发提前停止生成，丢弃太可惜）
-                    return salvage(lastJson, docId, chunkIndex);
+                    return GraphData.empty();
                 }
                 log.info("[实体抽取] 解析失败重试 {}/{} docId={} chunk={}: {}",
                         attempt, maxAttempts, docId, chunkIndex, e.getMessage());
