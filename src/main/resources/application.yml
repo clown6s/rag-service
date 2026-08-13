@@ -1,6 +1,10 @@
 server:
   port: 8080
 
+logging:
+  level:
+    org.redisson: WARN                 # Redisson 默认 INFO 日志太吵
+
 spring:
   application:
     name: rag-service
@@ -117,6 +121,13 @@ rag:
     max-sequential-tool-invocations: 5   # 单轮最多连续工具调用次数（防死循环）
     memory-max-messages: 12              # 服务端会话记忆窗口（按 conversationId 隔离）
     min-relevance-score: 0.3             # rerank 最高分低于该值视为检索未命中（触发确定性兜底回答）
+  memory:
+    redis:
+      enabled: true                      # 会话记忆 Redis 持久化（不可用时自动降级进程内记忆）
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      db: 0
   audit:
     enabled: true              # 审计事件写入 logs/audit/audit-YYYY-MM-DD.jsonl（异步，不阻塞链路）
     log-dir: logs/audit

@@ -56,6 +56,12 @@
             <artifactId>langchain4j-milvus</artifactId>
             <version>${langchain4j-beta.version}</version>
         </dependency>
+        <!-- Redis 客户端（会话记忆持久化；langchain4j-redis 模块在 1.17 已停更，自研 store 实现） -->
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>5.2.0</version>
+        </dependency>
 
         <!-- Milvus SDK (原生调用，用于混合检索/管理操作) -->
         <dependency>

@@ -4,6 +4,8 @@ import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.service.AiServices;
+import dev.langchain4j.store.memory.chat.ChatMemoryStore;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -24,14 +26,23 @@ public class AgentConfig {
             @Qualifier("chatModel") ChatModel chatModel,
             @Qualifier("streamingChatModel") StreamingChatModel streamingChatModel,
             AgentTools agentTools,
+            ObjectProvider<ChatMemoryStore> chatMemoryStoreProvider,
             @Value("${rag.agent.max-sequential-tool-invocations:5}") int maxToolInvocations,
             @Value("${rag.agent.memory-max-messages:12}") int memoryMaxMessages) {
+        ChatMemoryStore chatMemoryStore = chatMemoryStoreProvider.getIfAvailable();
         return AiServices.builder(AgentService.class)
                 .chatModel(chatModel)
                 .streamingChatModel(streamingChatModel)
                 .tools(agentTools)
-                .chatMemoryProvider(memoryId ->
-                        MessageWindowChatMemory.withMaxMessages(memoryMaxMessages))
+                .chatMemoryProvider(memoryId -> {
+                    var builder = MessageWindowChatMemory.builder()
+                            .id(memoryId)
+                            .maxMessages(memoryMaxMessages);
+                    if (chatMemoryStore != null) {
+                        builder.chatMemoryStore(chatMemoryStore);
+                    }
+                    return builder.build();
+                })
                 .maxSequentialToolsInvocations(maxToolInvocations)
                 .build();
     }
