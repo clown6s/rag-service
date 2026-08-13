@@ -30,6 +30,10 @@ public class LawCitationGuard {
     private static final Pattern LAW_CITATION = Pattern.compile(
             "《([^》]{2,40}?(?:法|条例|规定|办法|细则|意见|规则))》");
 
+    /** 条文号引用模式：《X法》第N条（阿拉伯/中文数字均可） */
+    private static final Pattern LAW_ARTICLE = Pattern.compile(
+            "《([^》]{2,40}?(?:法|条例|规定|办法|细则|意见|规则))》第([零一二三四五六七八九十百0-9]+)条");
+
     private static final long REFRESH_INTERVAL_MS = 5 * 60 * 1000L;
 
     private final MilvusClientV2 milvusClient;
@@ -61,20 +65,96 @@ public class LawCitationGuard {
         }
 
         Set<String> unknown = new LinkedHashSet<>();
-        Matcher m = LAW_CITATION.matcher(answer);
+        Set<String> unknownArticles = new LinkedHashSet<>();
+        Matcher m = LAW_ARTICLE.matcher(answer);
         while (m.find()) {
-            String cited = m.group(1);
+            String law = m.group(1);
+            String article = m.group(2);
+            boolean lawKnown = known.stream()
+                    .anyMatch(t -> t.contains(law) || law.contains(t));
+            if (!lawKnown) {
+                unknown.add(law);
+                continue;   // 法本身库外，条文号无需再查
+            }
+            // 法在库内 → 校验条文号是否真实存在（laws 模板按"第X条"切分，LIKE 精确可查）
+            if (!articleExists(law, article)) {
+                unknownArticles.add(law + "第" + article + "条");
+            }
+        }
+        // 补充纯法名引用（无条文号的）
+        Matcher m2 = LAW_CITATION.matcher(answer);
+        while (m2.find()) {
+            String cited = m2.group(1);
             boolean isKnown = known.stream()
                     .anyMatch(t -> t.contains(cited) || cited.contains(t));
             if (!isKnown) {
                 unknown.add(cited);
             }
         }
-        if (unknown.isEmpty()) {
+
+        if (unknown.isEmpty() && unknownArticles.isEmpty()) {
             return null;
         }
-        return "\n\n> 提示：以上回答中引用的《" + String.join("》《", unknown)
-                + "》未收录于当前知识库，相关表述可能超出资料范围，请以知识库内容为准。";
+        StringBuilder sb = new StringBuilder("\n\n> 提示：以上回答存在引用校验问题——");
+        if (!unknown.isEmpty()) {
+            sb.append("《").append(String.join("》《", unknown)).append("》未收录于当前知识库；");
+        }
+        if (!unknownArticles.isEmpty()) {
+            sb.append(String.join("、", unknownArticles)).append(" 未在知识库中找到对应条款（条文号可能引用有误）；");
+        }
+        sb.append("请以知识库内容为准。");
+        return sb.toString();
+    }
+
+    /** 条文号存在性校验：知识库中该法是否存在"第N条"chunk（中文数字形式） */
+    private boolean articleExists(String lawName, String articleNo) {
+        try {
+            String cn = toChineseNumeral(articleNo);
+            String filter = "title like \"%" + lawName + "%\" and text like \"%第" + cn + "条%\"";
+            QueryResp resp = milvusClient.query(QueryReq.builder()
+                    .collectionName(collectionName)
+                    .outputFields(List.of("id"))
+                    .filter(filter)
+                    .limit(1)
+                    .build());
+            return !resp.getQueryResults().isEmpty();
+        } catch (Exception e) {
+            log.debug("[引用校验] 条文号查询失败 {} 第{}条: {}", lawName, articleNo, e.getMessage());
+            return true;   // 查询失败不误伤（软依赖）
+        }
+    }
+
+    /** 阿拉伯数字 → 中文数字（1-9999；已为中文则原样返回） */
+    private String toChineseNumeral(String s) {
+        if (s == null || s.isEmpty()) return s;
+        if (!s.chars().allMatch(Character::isDigit)) return s;
+        int n = Integer.parseInt(s);
+        if (n <= 0) return s;
+        String[] digits = {"零", "一", "二", "三", "四", "五", "六", "七", "八", "九"};
+        String[] units = {"", "十", "百", "千"};
+        StringBuilder sb = new StringBuilder();
+        int pos = 0;
+        boolean zeroPending = false;
+        for (char c : s.toCharArray()) {
+            int d = c - '0';
+            int unitPos = s.length() - 1 - pos;
+            if (d == 0) {
+                zeroPending = sb.length() > 0;
+            } else {
+                if (zeroPending) {
+                    sb.append('零');
+                    zeroPending = false;
+                }
+                sb.append(digits[d]).append(units[unitPos]);
+            }
+            pos++;
+        }
+        String result = sb.toString();
+        // 中文数字习惯："一十" → "十"
+        if (result.startsWith("一十")) {
+            result = result.substring(1);
+        }
+        return result;
     }
 
     /** 从 Milvus 拉取文档标题集合（5 分钟缓存；失败返回空集合 → 不干预） */
