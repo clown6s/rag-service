@@ -6,7 +6,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
 
 /**
  * 实体关系抽取器。
@@ -36,11 +38,12 @@ public class EntityExtractor {
         String prompt = buildExtractPrompt(text);
         // 首试 + 1 次重试：LLM JSON 输出偶发截断/畸形（MalformedJsonException）
         int maxAttempts = 2;
+        String lastJson = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
                 String response = chatModel.chat(prompt);
-                String json = cleanJson(response);
-                GraphData data = gson.fromJson(json, GraphData.class);
+                lastJson = cleanJson(response);
+                GraphData data = gson.fromJson(lastJson, GraphData.class);
                 if (data != null && data.entities() != null && !data.entities().isEmpty()) {
                     log.debug("[实体抽取] docId={} chunk={} entities={} relations={}",
                             docId, chunkIndex,
@@ -55,7 +58,8 @@ public class EntityExtractor {
             } catch (Exception e) {
                 if (attempt >= maxAttempts) {
                     log.warn("[实体抽取] 失败 docId={} chunk={}: {}", docId, chunkIndex, e.getMessage());
-                    return GraphData.empty();
+                    // 截断 JSON 抢救：正则捞回完整对象（qwen-turbo 偶发提前停止生成，丢弃太可惜）
+                    return salvage(lastJson, docId, chunkIndex);
                 }
                 log.info("[实体抽取] 解析失败重试 {}/{} docId={} chunk={}: {}",
                         attempt, maxAttempts, docId, chunkIndex, e.getMessage());
@@ -63,6 +67,39 @@ public class EntityExtractor {
         }
         return GraphData.empty();
     }
+
+    /** 截断 JSON 抢救：捞回完整的实体/关系对象（Gson 严格解析失败的兜底） */
+    private GraphData salvage(String json, String docId, int chunkIndex) {
+        if (json == null) return GraphData.empty();
+        try {
+            List<GraphData.Entity> entities = new ArrayList<>();
+            Matcher em = ENTITY_SALVAGE.matcher(json);
+            while (em.find()) {
+                entities.add(new GraphData.Entity(em.group(1), em.group(2)));
+            }
+            List<GraphData.Relation> relations = new ArrayList<>();
+            Matcher rm = RELATION_SALVAGE.matcher(json);
+            while (rm.find()) {
+                relations.add(new GraphData.Relation(rm.group(1), rm.group(2), rm.group(3)));
+            }
+            if (!entities.isEmpty()) {
+                log.info("[实体抽取] 截断JSON抢救 docId={} chunk={} entities={} relations={}",
+                        docId, chunkIndex, entities.size(), relations.size());
+                return new GraphData(entities, relations);
+            }
+        } catch (Exception ignored) {
+            // 抢救失败按空处理
+        }
+        return GraphData.empty();
+    }
+
+    /** 完整实体对象（含 name/type 两个字段） */
+    private static final java.util.regex.Pattern ENTITY_SALVAGE = java.util.regex.Pattern.compile(
+            "\\{\\s*\"name\"\\s*:\\s*\"([^\"]{1,100})\"\\s*,\\s*\"type\"\\s*:\\s*\"([^\"]{0,50})\"\\s*}");
+
+    /** 完整关系对象（subject/relation/object 三字段） */
+    private static final java.util.regex.Pattern RELATION_SALVAGE = java.util.regex.Pattern.compile(
+            "\\{\\s*\"subject\"\\s*:\\s*\"([^\"]{1,100})\"\\s*,\\s*\"relation\"\\s*:\\s*\"([^\"]{1,50})\"\\s*,\\s*\"object\"\\s*:\\s*\"([^\"]{1,100})\"\\s*}");
 
     /**
      * 从用户查询中提取实体名称（检索时用，用于图遍历入口）

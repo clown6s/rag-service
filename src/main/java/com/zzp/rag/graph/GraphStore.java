@@ -40,8 +40,11 @@ public class GraphStore {
         int maxAttempts = 3;
         for (int attempt = 1; ; attempt++) {
             try (Session session = driver.session()) {
-                // 实体节点
+                // 实体节点（null 守卫：模型可能输出 name:null，Map.of 不允许 null 值）
                 for (var entity : data.entities()) {
+                    if (entity == null || entity.name() == null || entity.name().isBlank()) {
+                        continue;
+                    }
                     session.run("""
                         MERGE (e:Entity {name: $name})
                         SET e.type = $type
@@ -49,12 +52,18 @@ public class GraphStore {
                             SET e.chunkIds = coalesce(e.chunkIds, []) + $chunkId
                         )
                         """,
-                        Map.of("name", entity.name(), "type", entity.type(), "chunkId", chunkId));
+                        Map.of("name", entity.name(),
+                               "type", entity.type() == null ? "" : entity.type(),
+                               "chunkId", chunkId));
                 }
 
-                // 关系边
+                // 关系边（null 守卫同上）
                 if (data.relations() != null) {
                     for (var relation : data.relations()) {
+                        if (relation == null || relation.subject() == null
+                                || relation.object() == null || relation.relation() == null) {
+                            continue;
+                        }
                         session.run("""
                             MERGE (a:Entity {name: $subject})
                             MERGE (b:Entity {name: $object})
