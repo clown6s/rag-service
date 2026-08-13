@@ -34,19 +34,32 @@ public class EntityExtractor {
      */
     public GraphData extract(String text, String docId, int chunkIndex) {
         String prompt = buildExtractPrompt(text);
-        try {
-            String response = chatModel.chat(prompt);
-            String json = cleanJson(response);
-            GraphData data = gson.fromJson(json, GraphData.class);
-            if (data != null && data.entities() != null && !data.entities().isEmpty()) {
-                log.debug("[实体抽取] docId={} chunk={} entities={} relations={}",
-                        docId, chunkIndex,
-                        data.entities().size(),
-                        data.relations() != null ? data.relations().size() : 0);
-                return data;
+        // 首试 + 1 次重试：LLM JSON 输出偶发截断/畸形（MalformedJsonException）
+        int maxAttempts = 2;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                String response = chatModel.chat(prompt);
+                String json = cleanJson(response);
+                GraphData data = gson.fromJson(json, GraphData.class);
+                if (data != null && data.entities() != null && !data.entities().isEmpty()) {
+                    log.debug("[实体抽取] docId={} chunk={} entities={} relations={}",
+                            docId, chunkIndex,
+                            data.entities().size(),
+                            data.relations() != null ? data.relations().size() : 0);
+                    return data;
+                }
+                if (attempt < maxAttempts) {
+                    log.info("[实体抽取] 空结果重试 {}/{} docId={} chunk={}",
+                            attempt, maxAttempts, docId, chunkIndex);
+                }
+            } catch (Exception e) {
+                if (attempt >= maxAttempts) {
+                    log.warn("[实体抽取] 失败 docId={} chunk={}: {}", docId, chunkIndex, e.getMessage());
+                    return GraphData.empty();
+                }
+                log.info("[实体抽取] 解析失败重试 {}/{} docId={} chunk={}: {}",
+                        attempt, maxAttempts, docId, chunkIndex, e.getMessage());
             }
-        } catch (Exception e) {
-            log.warn("[实体抽取] 失败 docId={} chunk={}: {}", docId, chunkIndex, e.getMessage());
         }
         return GraphData.empty();
     }
@@ -75,7 +88,7 @@ public class EntityExtractor {
             文本：
             %s
 
-            只返回JSON（不要markdown代码块），格式：
+            只返回JSON（不要markdown代码块，不要任何解释性文字，不要省略字段），格式：
             {"entities":[{"name":"实体名","type":"类型"}],"relations":[{"subject":"主体","relation":"关系","object":"客体"}]}
 
             实体类型示例：人物、地点、时间、组织、概念、事件、作品、法规
