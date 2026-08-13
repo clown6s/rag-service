@@ -296,6 +296,14 @@ public class IngestionPipeline {
         return status;
     }
 
+    /** 文档删除时同步清理状态记录（保持状态文件只反映当前库，防历史残留膨胀） */
+    public void removeStatus(String docId) {
+        if (statusMap.remove(docId) != null) {
+            log.info("[摄入] 清理状态记录 docId={}", docId);
+            persistStatus();
+        }
+    }
+
     private void updateStatus(String docId, String status, Integer totalChunks, String error) {
         statusMap.put(docId, new IngestionStatus(docId, status, totalChunks, error));
         persistStatus();

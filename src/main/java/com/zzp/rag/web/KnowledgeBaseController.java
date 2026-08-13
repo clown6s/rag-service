@@ -1,6 +1,7 @@
 package com.zzp.rag.web;
 
 import com.zzp.rag.config.MilvusConfig;
+import com.zzp.rag.ingestion.IngestionPipeline;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.collection.request.DropCollectionReq;
 import io.milvus.v2.service.collection.request.GetCollectionStatsReq;
@@ -30,10 +31,13 @@ public class KnowledgeBaseController {
 
     private final MilvusClientV2 milvusClient;
     private final MilvusConfig milvusConfig;
+    private final IngestionPipeline ingestionPipeline;
 
-    public KnowledgeBaseController(@Lazy MilvusClientV2 milvusClient, MilvusConfig milvusConfig) {
+    public KnowledgeBaseController(@Lazy MilvusClientV2 milvusClient, MilvusConfig milvusConfig,
+                                   IngestionPipeline ingestionPipeline) {
         this.milvusClient = milvusClient;
         this.milvusConfig = milvusConfig;
+        this.ingestionPipeline = ingestionPipeline;
     }
 
     @Value("${milvus.collection}")
@@ -110,6 +114,8 @@ public class KnowledgeBaseController {
                     .build());
             long deleted = resp.getDeleteCnt();
             log.info("[管理] 删除文档 docId={} 删除chunks={}", docId, deleted);
+            // 同步清理摄入状态记录（历史残留：状态文件曾累积已删文档记录）
+            ingestionPipeline.removeStatus(docId);
             return ApiResponse.ok(new DeleteResult(docId, deleted));
         } catch (Exception e) {
             log.error("[管理] 删除文档失败 docId={}", docId, e);
