@@ -120,8 +120,8 @@ rag:
     max-hops: 2               # 图遍历最大跳数（越大越深但越慢）
     enabled: true             # 图谱构建开关（GraphRAG 增强项，关闭不影响检索主链路）
     async: true               # 异步构建：文档入库即 COMPLETED 可检索，图谱后台补建（大文档摄入提速的关键）
-    extract-concurrency: 8    # 实体抽取并发（受 LLM 速率限制约束）
-    rate-limit-per-second: 6  # 图构建 LLM 调用限流（保护共享 key 配额；0=不限）
+    extract-concurrency: 12   # 实体抽取并发（受 LLM 速率限制约束）
+    rate-limit-per-second: 20 # 图构建 LLM 调用限流（千问配额宽裕；DeepSeek 时代曾压到 6 防挤爆评测）
   rewrite:
     multi-query-count: 3
   agent:
