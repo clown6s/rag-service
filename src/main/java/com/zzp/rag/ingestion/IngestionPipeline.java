@@ -6,6 +6,7 @@ import com.google.gson.reflect.TypeToken;
 import com.zzp.rag.config.MilvusConfig;
 import com.zzp.rag.graph.EntityExtractor;
 import com.zzp.rag.graph.GraphStore;
+import com.zzp.rag.util.SimpleRateLimiter;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -66,8 +67,18 @@ public class IngestionPipeline {
     @Value("${rag.graph.async:true}")
     private boolean graphAsync;
 
+    /** 图构建 LLM 调用限流（req/s，0=不限）——保护共享 LLM 配额，防止批量抽取打满限流窗口 */
+    @Value("${rag.graph.rate-limit-per-second:0}")
+    private double graphRateLimitPerSecond;
+
     /** 图谱后台构建线程池（异步模式专用） */
     private ExecutorService graphExecutor;
+
+    /** 图构建限流器（懒初始化） */
+    private SimpleRateLimiter graphRateLimiter;
+
+    /** 状态文件写锁（多文档并发摄入时串行化落盘，防文件交叉写坏） */
+    private final Object statusWriteLock = new Object();
 
     private static final int MAX_STATUS = 1000;
     private final java.util.Map<String, IngestionStatus> statusMap =
@@ -235,8 +246,9 @@ public class IngestionPipeline {
         });
     }
 
-    /** 图构建核心循环：逐 chunk 实体抽取 + 存图（并行，单 chunk 失败不阻断） */
+    /** 图构建核心循环：逐 chunk 实体抽取 + 存图（并行，单 chunk 失败不阻断；LLM 调用受限流器约束） */
     private void runGraphBuild(List<TextSegment> chunks, String docId, ExecutorService executor) {
+        ensureGraphRateLimiter();
         int totalChunks = chunks.size();
         List<CompletableFuture<Void>> futures = new ArrayList<>(totalChunks);
         AtomicInteger done = new AtomicInteger(0);
@@ -244,6 +256,9 @@ public class IngestionPipeline {
             final int idx = i;
             final String chunkText = chunks.get(i).text();
             futures.add(CompletableFuture.runAsync(() -> {
+                if (graphRateLimiter != null) {
+                    graphRateLimiter.acquire();
+                }
                 try {
                     var graphData = entityExtractor.extract(chunkText, docId, idx);
                     graphStore.save(graphData, docId, idx);
@@ -257,6 +272,20 @@ public class IngestionPipeline {
             }, executor));
         }
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+    }
+
+    /** 懒初始化图构建限流器 */
+    private void ensureGraphRateLimiter() {
+        if (graphRateLimitPerSecond <= 0 || graphRateLimiter != null) {
+            return;
+        }
+        synchronized (this) {
+            if (graphRateLimiter == null) {
+                graphRateLimiter = new SimpleRateLimiter(
+                        graphRateLimitPerSecond, graphRateLimitPerSecond);
+                log.info("[摄入] 图构建限流器启用: {} req/s", graphRateLimitPerSecond);
+            }
+        }
     }
 
     public IngestionStatus getStatus(String docId) {
@@ -276,16 +305,23 @@ public class IngestionPipeline {
      * 将当前状态写入本地文件，保证重启后可恢复
      */
     private void persistStatus() {
-        try {
-            File file = new File(statusFilePath);
-            if (file.getParentFile() != null) {
-                file.getParentFile().mkdirs();
+        synchronized (statusWriteLock) {
+            try {
+                // 快照拷贝：synchronizedMap 只保护单操作，序列化迭代必须持锁快照，防 ConcurrentModification
+                Map<String, IngestionStatus> snapshot;
+                synchronized (statusMap) {
+                    snapshot = new java.util.LinkedHashMap<>(statusMap);
+                }
+                File file = new File(statusFilePath);
+                if (file.getParentFile() != null) {
+                    file.getParentFile().mkdirs();
+                }
+                try (FileWriter writer = new FileWriter(file)) {
+                    gson.toJson(snapshot, writer);
+                }
+            } catch (Exception e) {
+                log.warn("[摄入] 持久化状态文件失败: {}", e.getMessage());
             }
-            try (FileWriter writer = new FileWriter(file)) {
-                gson.toJson(statusMap, writer);
-            }
-        } catch (Exception e) {
-            log.warn("[摄入] 持久化状态文件失败: {}", e.getMessage());
         }
     }
 
