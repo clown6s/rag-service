@@ -128,6 +128,8 @@ rag:
     max-sequential-tool-invocations: 5   # 单轮最多连续工具调用次数（防死循环）
     memory-max-messages: 12              # 服务端会话记忆窗口（按 conversationId 隔离）
     min-relevance-score: 0.3             # rerank 最高分低于该值视为检索未命中（触发确定性兜底回答）
+  citation-guard:
+    enabled: true                        # 法名引用校验：答案引用知识库外法律名称时追加标注（防引用幻觉）
   memory:
     redis:
       enabled: true                      # 会话记忆 Redis 持久化（不可用时自动降级进程内记忆）

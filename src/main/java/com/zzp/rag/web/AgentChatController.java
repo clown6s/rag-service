@@ -2,6 +2,7 @@ package com.zzp.rag.web;
 
 import com.zzp.rag.agent.AgentOrchestrator;
 import com.zzp.rag.agent.AgentOrchestrator.AgentStreamHandler;
+import com.zzp.rag.agent.LawCitationGuard;
 import com.zzp.rag.audit.AuditEvent;
 import com.zzp.rag.audit.AuditEvent.AuditContext;
 import com.zzp.rag.audit.AuditService;
@@ -43,15 +44,18 @@ public class AgentChatController {
 
     private final AgentOrchestrator orchestrator;
     private final AuditService auditService;
+    private final LawCitationGuard citationGuard;
 
     private final ExecutorService executor = new ThreadPoolExecutor(
             16, 16, 0L, TimeUnit.MILLISECONDS,
             new LinkedBlockingQueue<>(32),
             new ThreadPoolExecutor.AbortPolicy());
 
-    public AgentChatController(AgentOrchestrator orchestrator, AuditService auditService) {
+    public AgentChatController(AgentOrchestrator orchestrator, AuditService auditService,
+                               LawCitationGuard citationGuard) {
         this.orchestrator = orchestrator;
         this.auditService = auditService;
+        this.citationGuard = citationGuard;
     }
 
     @PreDestroy
@@ -78,9 +82,14 @@ public class AgentChatController {
         try {
             AgentOrchestrator.AgentAnswer result = orchestrator.answer(conversationId, req.query());
             // 整段格式修复（与固定流水线端点一致的兜底）
+            String answer = StreamTokenFixer.fixFull(result.answer());
+            // 法名引用校验：库外引用追加标注（防引用幻觉）
+            String annotation = citationGuard.validate(answer);
+            if (annotation != null) {
+                answer = answer + annotation;
+            }
             result = new AgentOrchestrator.AgentAnswer(
-                    StreamTokenFixer.fixFull(result.answer()),
-                    result.sources(), result.route(), result.rerankDegraded());
+                    answer, result.sources(), result.route(), result.rerankDegraded());
             auditService.record(buildAuditEvent(req, result, ctx,
                     System.currentTimeMillis() - start, "SUCCESS", null));
             return ApiResponse.ok(new AgentChatResponse(
@@ -154,6 +163,13 @@ public class AgentChatController {
                                 // 兜底句式作为唯一 token 下发
                                 fullAnswer.append(AgentOrchestrator.NO_ANSWER);
                                 emitter.send(SseEmitter.event().name("token").data(AgentOrchestrator.NO_ANSWER));
+                            } else {
+                                // 法名引用校验：库外引用追加标注（作为末尾 token 事件下发）
+                                String annotation = citationGuard.validate(fullAnswer.toString());
+                                if (annotation != null) {
+                                    fullAnswer.append(annotation);
+                                    emitter.send(SseEmitter.event().name("token").data(annotation));
+                                }
                             }
                             emitter.send(SseEmitter.event().name("sources").data(sources));
                             emitter.send(SseEmitter.event()
