@@ -23,22 +23,30 @@ spring:
 # ============================================================
 langchain4j:
   open-ai:
-    # DeepSeek V3 — 主力对话 + Prompt改写 + 摘要
+    # OpenAI 兼容 LLM 通道 —— dev 用千问 DashScope（阿里云百炼），模型无关只改此处
+    # 切回 DeepSeek：api-key 改 ${DEEPSEEK_API_KEY}，base-url 改 https://api.deepseek.com/v1，
+    #   chat-model.model-name 改 deepseek-chat，reasoner.model-name 改 deepseek-reasoner
+    # 上线切本地 vLLM：见 application-prod.yml
     deepseek:
       # 密钥必须由环境变量注入，无默认值（未配置即启动失败，避免硬编码泄露）
-      api-key: ${DEEPSEEK_API_KEY}
-      base-url: https://api.deepseek.com/v1
+      api-key: ${DASHSCOPE_API_KEY}
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
       chat-model:
-        model-name: deepseek-chat
+        model-name: qwen-plus            # 主力对话 + Agent 工具循环
         temperature: 0.3
         max-tokens: 4096
         timeout: 60s
-      # DeepSeek R1 — Agentic路由推理
+      # 意图路由（纯文本分类，无需推理模型）
       reasoner:
-        model-name: deepseek-reasoner
+        model-name: qwen-plus
         temperature: 0.1
-        max-tokens: 2048
-        timeout: 120s
+        max-tokens: 1024
+        timeout: 30s                     # 路由失败快速降级（历史坑：限流时 120s 卡死）
+      # 轻量任务小模型（省钱省延迟）
+      contextual:
+        model-name: qwen-turbo           # 文档摘要
+      graph:
+        model-name: qwen-turbo           # 实体抽取
 
   # Embedding
   embedding:
@@ -101,14 +109,13 @@ rag:
     min-rerank-score: 0.3     # 重排后低于该分数的片段不进上下文（无关文档过滤；rerank 降级时跳过）
   rerank:
     model: BAAI/bge-reranker-v2-m3
-    # ai-sidecar（本地 bge-reranker，协议兼容硅基流动）；切回硅基流动：https://api.siliconflow.cn/v1/rerank
-    api-url: http://127.0.0.1:8081/rerank
-    # 主通道失败时的降级通道（sidecar 未部署时仍可重排并产出相关度分数，供 Agent 兜底判定）
-    fallback-api-url: https://api.siliconflow.cn/v1/rerank
-    # sidecar 鉴权 token；sidecar 未配 AISIDECAR_TOKEN 时留空即可
-    api-key: ${AISIDECAR_TOKEN:}
-    # 降级通道（硅基流动）鉴权
-    fallback-api-key: ${SILICONFLOW_API_KEY:}
+    # 主通道：硅基流动 API。dev 机器 CPU 跑本地 rerank 约 41s/20条（实测），超过 30s 超时——
+    # 本地推理（ai-sidecar）留给服务器/GPU 环境，就绪后与降级通道对调即可
+    api-url: https://api.siliconflow.cn/v1/rerank
+    api-key: ${SILICONFLOW_API_KEY:}
+    # 降级通道：ai-sidecar 本地 bge-reranker（协议兼容，模型已就绪于 models/bge-reranker-v2-m3）
+    fallback-api-url: http://127.0.0.1:8081/rerank
+    fallback-api-key: ${AISIDECAR_TOKEN:}
   graph:
     max-hops: 2               # 图遍历最大跳数（越大越深但越慢）
     enabled: true             # 图谱构建开关（GraphRAG 增强项，关闭不影响检索主链路）

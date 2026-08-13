@@ -81,7 +81,7 @@ public class GraphStore {
                 RETURN e.name AS source,
                        related.name AS target,
                        [r IN relationships(path) | r.type] AS relTypes,
-                       related.chunkIds AS chunkIds
+                       COALESCE(related.chunkIds, []) AS chunkIds
                 LIMIT 100
                 """.formatted(maxHops);
 

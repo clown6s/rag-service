@@ -81,16 +81,17 @@ public class LLMConfig {
     }
 
     /**
-     * 用于 Contextual Chunker 的轻量摘要模型（复用 V3）
-     * maxTokens=256，只生成 50 字摘要
+     * 用于 Contextual Chunker 的轻量摘要模型
+     * maxTokens=256，只生成 50 字摘要；模型名走 yml（默认 qwen-turbo 级小模型）
      */
     @Bean
     @Qualifier("contextualChatModel")
-    public ChatModel contextualChatModel() {
+    public ChatModel contextualChatModel(
+            @Value("${langchain4j.open-ai.deepseek.contextual.model-name:qwen-turbo}") String model) {
         return OpenAiChatModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
-                .modelName("deepseek-chat")
+                .modelName(model)
                 .temperature(0.1)
                 .maxTokens(256)
                 .timeout(Duration.ofSeconds(30))
@@ -98,16 +99,17 @@ public class LLMConfig {
     }
 
     /**
-     * 用于实体关系抽取的模型（复用 V3）
-     * maxTokens=4096，保证 JSON 输出不被截断
+     * 用于实体关系抽取的模型
+     * maxTokens=4096，保证 JSON 输出不被截断；模型名走 yml（默认 qwen-turbo 级小模型）
      */
     @Bean
     @Qualifier("graphChatModel")
-    public ChatModel graphChatModel() {
+    public ChatModel graphChatModel(
+            @Value("${langchain4j.open-ai.deepseek.graph.model-name:qwen-turbo}") String model) {
         return OpenAiChatModel.builder()
                 .apiKey(apiKey)
                 .baseUrl(baseUrl)
-                .modelName("deepseek-chat")
+                .modelName(model)
                 .temperature(0.1)
                 .maxTokens(4096)
                 .timeout(Duration.ofSeconds(60))
