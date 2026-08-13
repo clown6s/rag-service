@@ -1,5 +1,6 @@
 package com.zzp.rag.agent;
 
+import com.zzp.rag.retrieval.RetrievalPipeline;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
@@ -29,18 +30,21 @@ public class AgentOrchestrator {
     private final ChatModel reasonerModel;
     private final AgentService agentService;
     private final AgentTools agentTools;
+    private final RetrievalPipeline retrievalPipeline;
 
     public AgentOrchestrator(
             @Qualifier("chatModel") ChatModel chatModel,
             @Qualifier("streamingChatModel") StreamingChatModel streamingChatModel,
             @Qualifier("reasonerModel") ChatModel reasonerModel,
             AgentService agentService,
-            AgentTools agentTools) {
+            AgentTools agentTools,
+            RetrievalPipeline retrievalPipeline) {
         this.chatModel = chatModel;
         this.streamingChatModel = streamingChatModel;
         this.reasonerModel = reasonerModel;
         this.agentService = agentService;
         this.agentTools = agentTools;
+        this.retrievalPipeline = retrievalPipeline;
     }
 
     public record AgentAnswer(String answer, List<String> sources, String route, boolean rerankDegraded) {}
@@ -62,19 +66,28 @@ public class AgentOrchestrator {
         if ("CHAT".equals(route)) {
             return new AgentAnswer(chatDirect(query), List.of(), route, false);
         }
+        // KNOWLEDGE_QA：确定性预检索——不依赖模型是否调用工具
+        // （咨询类问题模型常跳过工具凭自身知识作答，产生引用幻觉；预检索后检索空则直接兜底）
+        RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(query, null);
+        boolean retrievalEmpty = pre.segments().isEmpty() && pre.graphContext().isBlank();
+        if (retrievalEmpty) {
+            log.info("[Agent] 预检索无结果，使用确定性兜底回答");
+            return new AgentAnswer(NO_ANSWER, List.of(), route, pre.rerankDegraded());
+        }
+        String context = retrievalPipeline.buildContext(pre, 3000);
         try {
-            String answer = agentService.chat(conversationId, query);
-            boolean retrievalEmpty = agentTools.isRetrievalEmpty();
-            log.info("[Agent] 检索空判定: empty={}, sources={}", retrievalEmpty, agentTools.getSources());
-            if (retrievalEmpty) {
-                log.info("[Agent] 检索无结果，使用确定性兜底回答");
-                answer = NO_ANSWER;
-            }
-            return new AgentAnswer(answer, agentTools.getSources(), route,
-                    agentTools.isRerankDegraded());
+            String answer = agentService.chat(conversationId, enrich(query, context));
+            List<String> sources = agentTools.getSources().isEmpty()
+                    ? pre.getSources() : agentTools.getSources();
+            return new AgentAnswer(answer, sources, route, pre.rerankDegraded());
         } finally {
             agentTools.clear();
         }
+    }
+
+    /** 把确定性检索资料拼进用户消息（Agent 直接基于资料回答，工具仅作补充） */
+    private String enrich(String query, String context) {
+        return query + "\n\n[知识库检索资料]\n" + context + "\n[/知识库检索资料]";
     }
 
     // ==================== 流式 ====================
@@ -103,17 +116,27 @@ public class AgentOrchestrator {
             });
             return;
         }
+        // 确定性预检索（同非流式）：检索空直接流式下发兜底句式
+        RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(query, null);
+        if (pre.segments().isEmpty() && pre.graphContext().isBlank()) {
+            log.info("[Agent] 预检索无结果，流式下发兜底句式");
+            handler.onToken(NO_ANSWER);
+            handler.onComplete(route, List.of(), pre.rerankDegraded());
+            return;
+        }
+        String context = retrievalPipeline.buildContext(pre, 3000);
+        String enriched = enrich(query, context);
+
         // 工具执行回调与工具执行同线程，此处读取 ThreadLocal 状态并快照，
         // 供 onCompleteResponse（可能在其他线程）使用
-        final List<String>[] sourcesHolder = (List<String>[]) new List[]{List.of()};
-        final boolean[] degradedHolder = {false};
-        agentService.chatStream(conversationId, query)
+        final List<String>[] sourcesHolder = (List<String>[]) new List[]{pre.getSources()};
+        final boolean[] degradedHolder = {pre.rerankDegraded()};
+        agentService.chatStream(conversationId, enriched)
                 .onPartialResponse(handler::onToken)
                 .onToolExecuted(req -> {
-                    boolean empty = agentTools.isRetrievalEmpty();
                     sourcesHolder[0] = agentTools.getSources();
                     degradedHolder[0] = agentTools.isRerankDegraded();
-                    handler.onToolExecuted(req.request().name(), req.request().arguments(), empty);
+                    handler.onToolExecuted(req.request().name(), req.request().arguments(), false);
                 })
                 .onCompleteResponse(resp -> {
                     try {
