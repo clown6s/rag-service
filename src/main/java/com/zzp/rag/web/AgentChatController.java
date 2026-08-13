@@ -28,6 +28,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Agent 对话 API（数字员工最小闭环）
@@ -118,15 +119,13 @@ public class AgentChatController {
             StringBuilder fullAnswer = new StringBuilder();
             // 检索被调用且一无所获时，抑制模型输出，用固定句式兜底（每次工具执行后刷新）
             final boolean[] suppressTokens = {false};
+            // 客户端断开后 emitter 已完成的标记（"already completed" 是断连噪声，不是生成失败）
+            final AtomicBoolean closed = new AtomicBoolean(false);
             try {
                 orchestrator.answerStream(conversationId, req.query(), new AgentStreamHandler() {
                     @Override
                     public void onRoute(String route) {
-                        try {
-                            emitter.send(SseEmitter.event().name("route").data(route));
-                        } catch (IOException e) {
-                            emitter.completeWithError(e);
-                        }
+                        sendSafe(emitter, closed, "route", route);
                     }
 
                     @Override
@@ -137,67 +136,57 @@ public class AgentChatController {
                         // token 级格式修复（与固定流水线端点一致），修复后再下发给前端
                         String fixed = StreamTokenFixer.fix(token, fullAnswer);
                         fullAnswer.append(fixed);
-                        try {
-                            emitter.send(SseEmitter.event().name("token").data(fixed));
-                        } catch (IOException e) {
-                            emitter.completeWithError(e);
-                        }
+                        sendSafe(emitter, closed, "token", fixed);
                     }
 
                     @Override
                     public void onToolExecuted(String toolName, String arguments, boolean retrievalEmpty) {
                         log.info("[Agent][SSE] 工具执行: {} {} retrievalEmpty={}", toolName, arguments, retrievalEmpty);
                         suppressTokens[0] = retrievalEmpty;
-                        try {
-                            emitter.send(SseEmitter.event().name("tool")
-                                    .data(Map.of("tool", toolName, "arguments", arguments)));
-                        } catch (IOException e) {
-                            emitter.completeWithError(e);
-                        }
+                        sendSafe(emitter, closed, "tool",
+                                Map.of("tool", toolName, "arguments", arguments));
                     }
 
                     @Override
                     public void onComplete(String route, List<String> sources, boolean degraded) {
-                        try {
-                            if (suppressTokens[0]) {
-                                // 兜底句式作为唯一 token 下发
-                                fullAnswer.append(AgentOrchestrator.NO_ANSWER);
-                                emitter.send(SseEmitter.event().name("token").data(AgentOrchestrator.NO_ANSWER));
-                            } else {
-                                // 法名引用校验：库外引用追加标注（作为末尾 token 事件下发）
-                                String annotation = citationGuard.validate(fullAnswer.toString());
-                                if (annotation != null) {
-                                    fullAnswer.append(annotation);
-                                    emitter.send(SseEmitter.event().name("token").data(annotation));
-                                }
+                        if (closed.get()) {
+                            return;   // 客户端已断开，不再下发也不记审计
+                        }
+                        if (suppressTokens[0]) {
+                            // 兜底句式作为唯一 token 下发
+                            fullAnswer.append(AgentOrchestrator.NO_ANSWER);
+                            sendSafe(emitter, closed, "token", AgentOrchestrator.NO_ANSWER);
+                        } else {
+                            // 法名引用校验：库外引用追加标注（作为末尾 token 事件下发）
+                            String annotation = citationGuard.validate(fullAnswer.toString());
+                            if (annotation != null) {
+                                fullAnswer.append(annotation);
+                                sendSafe(emitter, closed, "token", annotation);
                             }
-                            emitter.send(SseEmitter.event().name("sources").data(sources));
-                            emitter.send(SseEmitter.event()
-                                    .name("done")
-                                    .data("[DONE]"));
+                        }
+                        sendSafe(emitter, closed, "sources", sources);
+                        sendSafe(emitter, closed, "done", "[DONE]");
+                        if (!closed.get()) {
                             emitter.complete();
                             auditService.record(buildAuditEvent(req,
                                     new AgentOrchestrator.AgentAnswer(
                                             fullAnswer.toString(), sources, route, degraded),
                                     auditCtx, System.currentTimeMillis() - start, "SUCCESS", null));
-                        } catch (IOException e) {
-                            emitter.completeWithError(e);
                         }
                     }
 
                     @Override
                     public void onError(Throwable error) {
+                        if (closed.get()) {
+                            return;   // 客户端已断开导致的错误，非生成失败
+                        }
                         log.error("[Agent][SSE] 生成失败", error);
                         auditService.record(buildAuditEvent(req, null, auditCtx,
                                 System.currentTimeMillis() - start,
                                 "GENERATION_FAILED", error.getMessage()));
-                        try {
-                            emitter.send(SseEmitter.event()
-                                    .name("error")
-                                    .data("生成失败: " + error.getMessage()));
+                        sendSafe(emitter, closed, "error", "生成失败: " + error.getMessage());
+                        if (!closed.get()) {
                             emitter.complete();
-                        } catch (IOException ignored) {
-                            emitter.completeWithError(error);
                         }
                     }
                 });
@@ -205,6 +194,9 @@ public class AgentChatController {
                 log.error("[Agent][SSE] 处理失败", e);
                 auditService.record(buildAuditEvent(req, null, auditCtx,
                         System.currentTimeMillis() - start, "FAILED", e.getMessage()));
+                if (closed.get()) {
+                    return;
+                }
                 try {
                     emitter.send(SseEmitter.event()
                             .name("error")
@@ -225,6 +217,28 @@ public class AgentChatController {
         });
 
         return emitter;
+    }
+
+    // ==================== SSE 工具 ====================
+
+    /**
+     * 安全下发 SSE 事件：
+     * 客户端断开后 emitter 已完成的 "already completed"（IllegalStateException）是断连噪声，
+     * 不是生成失败——标记 closed 并静默跳过，避免审计被噪声污染。
+     */
+    private void sendSafe(SseEmitter emitter, AtomicBoolean closed, String event, Object data) {
+        if (closed.get()) {
+            return;
+        }
+        try {
+            emitter.send(SseEmitter.event().name(event).data(data));
+        } catch (IOException e) {
+            closed.set(true);
+            emitter.completeWithError(e);
+        } catch (IllegalStateException e) {
+            closed.set(true);
+            log.debug("[Agent][SSE] 客户端已断开，跳过下发: {}", e.getMessage());
+        }
     }
 
     // ==================== 审计 ====================
