@@ -31,39 +31,57 @@ public class GraphStore {
 
     /**
      * 保存实体的实体和关系到 Neo4j
+     * 并发 MERGE 同一实体节点会触发死锁（ForsetiClient DeadlockDetected），瞬时错误重试 3 次
      */
     public void save(EntityExtractor.GraphData data, String docId, int chunkIndex) {
         if (data == null || data.entities().isEmpty()) return;
         String chunkId = docId + "_" + chunkIndex;
 
-        try (Session session = driver.session()) {
-            // 实体节点
-            for (var entity : data.entities()) {
-                session.run("""
-                    MERGE (e:Entity {name: $name})
-                    SET e.type = $type
-                    FOREACH (_ IN CASE WHEN NOT $chunkId IN coalesce(e.chunkIds, []) THEN [1] ELSE [] END |
-                        SET e.chunkIds = coalesce(e.chunkIds, []) + $chunkId
-                    )
-                    """,
-                    Map.of("name", entity.name(), "type", entity.type(), "chunkId", chunkId));
-            }
-
-            // 关系边
-            if (data.relations() != null) {
-                for (var relation : data.relations()) {
+        int maxAttempts = 3;
+        for (int attempt = 1; ; attempt++) {
+            try (Session session = driver.session()) {
+                // 实体节点
+                for (var entity : data.entities()) {
                     session.run("""
-                        MERGE (a:Entity {name: $subject})
-                        MERGE (b:Entity {name: $object})
-                        MERGE (a)-[r:RELATES {type: $type}]->(b)
+                        MERGE (e:Entity {name: $name})
+                        SET e.type = $type
+                        FOREACH (_ IN CASE WHEN NOT $chunkId IN coalesce(e.chunkIds, []) THEN [1] ELSE [] END |
+                            SET e.chunkIds = coalesce(e.chunkIds, []) + $chunkId
+                        )
                         """,
-                        Map.of("subject", relation.subject(),
-                               "object", relation.object(),
-                               "type", relation.relation()));
+                        Map.of("name", entity.name(), "type", entity.type(), "chunkId", chunkId));
                 }
+
+                // 关系边
+                if (data.relations() != null) {
+                    for (var relation : data.relations()) {
+                        session.run("""
+                            MERGE (a:Entity {name: $subject})
+                            MERGE (b:Entity {name: $object})
+                            MERGE (a)-[r:RELATES {type: $type}]->(b)
+                            """,
+                            Map.of("subject", relation.subject(),
+                                   "object", relation.object(),
+                                   "type", relation.relation()));
+                    }
+                }
+                return;   // 成功
+            } catch (org.neo4j.driver.exceptions.TransientException e) {
+                if (attempt >= maxAttempts) {
+                    log.warn("[图存储] 写入失败(死锁重试耗尽) docId={} chunk={}: {}", docId, chunkIndex, e.getMessage());
+                    return;
+                }
+                log.warn("[图存储] 死锁重试 {}/{} docId={} chunk={}", attempt, maxAttempts, docId, chunkIndex);
+                try {
+                    Thread.sleep(100L * attempt);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            } catch (Exception e) {
+                log.warn("[图存储] 写入失败 docId={} chunk={}: {}", docId, chunkIndex, e.getMessage());
+                return;
             }
-        } catch (Exception e) {
-            log.warn("[图存储] 写入失败 docId={} chunk={}: {}", docId, chunkIndex, e.getMessage());
         }
     }
 
