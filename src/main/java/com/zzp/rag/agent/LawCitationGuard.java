@@ -105,16 +105,21 @@ public class LawCitationGuard {
     }
 
     /**
-     * 法名匹配：剥离文件后缀后双向包含——
-     * 兼容《中华人民共和国家庭教育促进法》（全称）vs "家庭教育促进法.pdf"（库标题带后缀）的差异。
-     * 历史坑：直接 contains 比对时 .pdf 尾巴导致两边都匹配不上 → 库内法律被误标"未收录"。
+     * 法名匹配：剥离"中华人民共和国"前缀与文件后缀后双向包含。
+     * 兼容三种真实差异：
+     * 1. 全称 vs 短名（《中华人民共和国家庭教育促进法》vs "家庭教育促进法.pdf"）
+     * 2. 文件后缀尾巴（.pdf 曾导致两边 contains 都失败）
+     * 3. 标题笔误（"中华人工共和国刑法"缺"民"——剥前缀后 "刑法" ⊂ 标题尾 ✓）
+     * 历史坑：直接 contains 比对 → 库内法律被误标"未收录"。
      */
     private static boolean titleMatches(String title, String cited) {
         if (title == null || cited == null || cited.isBlank()) {
             return false;
         }
-        String clean = title.replaceAll("\\.(?i)(pdf|docx?|md|txt|html)$", "");
-        return clean.contains(cited) || cited.contains(clean);
+        String t = title.replaceAll("^中华人民共和国", "")
+                .replaceAll("\\.(?i)(pdf|docx?|md|txt|html)$", "");
+        String c = cited.replaceAll("^中华人民共和国", "");
+        return t.contains(c) || c.contains(t);
     }
 
     /** 条文号存在性校验：知识库中该法是否存在"第N条"chunk（中文数字形式） */
