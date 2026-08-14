@@ -36,6 +36,9 @@ public class IngestionController {
             "text/plain",
             "text/markdown",
             "text/html",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",   // pptx
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",           // xlsx
+            "text/csv",
             // 部分文档（旧 doc/md）可能被识别为 octet-stream，结合扩展名放行
             "application/octet-stream"
     );
@@ -83,7 +86,7 @@ public class IngestionController {
         }
         // 校验1：扩展名白名单
         String name = file.getOriginalFilename();
-        if (name == null || !name.matches(".*\\.(pdf|docx?|md|txt|html?)$")) {
+        if (name == null || !name.matches(".*\\.(pdf|docx?|md|txt|html?|pptx|xlsx|csv)$")) {
             throw new IllegalArgumentException("不支持的文件类型");
         }
         // 校验2：真实 MIME 类型（防伪装扩展名）

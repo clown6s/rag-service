@@ -191,4 +191,4 @@ rag:
       enabled: true                     # 内置演示 MCP 服务（阶段3 试点，/mcp/demo/sse）
   upload:
     max-file-size: 20MB
-    allowed-types: pdf,docx,doc,md,txt,html
+    allowed-types: pdf,docx,doc,md,txt,html,pptx,xlsx,csv

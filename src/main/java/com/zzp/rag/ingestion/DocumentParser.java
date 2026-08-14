@@ -103,6 +103,18 @@ public class DocumentParser {
                     log.warn("[解析] sidecar /parse 失败，降级 Tika: {}", e.getMessage());
                     text = parseWithTika(file.getInputStream());
                 }
+            } else if (fileName != null && isNewSidecarType(fileName)) {
+                // PPT/表格 双通道：优先 sidecar /parse（pptx 标题层级、xlsx/csv 表格结构），
+                // 失败降级 Tika（软依赖——Tika 也能提取 OOXML 文本，只是无结构）
+                try {
+                    ParsedDocument parsed = parseWithSidecar(file.getBytes(), fileName);
+                    text = parsed.text();
+                    warnings.addAll(parsed.warnings());
+                    sections = parsed.sections();
+                } catch (Exception e) {
+                    log.warn("[解析] sidecar /parse 失败，降级 Tika: {}", e.getMessage());
+                    text = parseWithTika(file.getInputStream());
+                }
             } else {
                 // 其他格式用 Tika
                 text = parseWithTika(file.getInputStream());
@@ -135,8 +147,14 @@ public class DocumentParser {
         }
     }
 
+    /** PPT/表格类新格式（sidecar 结构化解析） */
+    private boolean isNewSidecarType(String fileName) {
+        String lower = fileName.toLowerCase();
+        return lower.endsWith(".pptx") || lower.endsWith(".xlsx") || lower.endsWith(".csv");
+    }
+
     /**
-     * 调 ai-sidecar /parse 解析（PDF/DOCX）
+     * 调 ai-sidecar /parse 解析（PDF/DOCX/PPTX/XLSX/CSV）
      * 返回结构化结果；PDF 的 sections 由 DeepDoc 布局识别就绪后填充
      */
     private ParsedDocument parseWithSidecar(byte[] bytes, String fileName) {
