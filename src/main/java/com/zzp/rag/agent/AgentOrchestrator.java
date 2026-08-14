@@ -67,7 +67,8 @@ public class AgentOrchestrator {
     }
 
     public record AgentAnswer(String answer, List<String> sources, String route,
-                              boolean rerankDegraded, int graphContextChars, boolean mcpToolsUsed) {}
+                              boolean rerankDegraded, int graphContextChars, boolean mcpToolsUsed,
+                              long employeeId) {}
 
     /** 流式回调 — 控制器按此桥接 SSE 事件；onRoute 先于 onToken 同步触发 */
     public interface AgentStreamHandler {
@@ -75,7 +76,7 @@ public class AgentOrchestrator {
         void onToken(String token);
         void onToolExecuted(String toolName, String arguments, boolean retrievalEmpty);
         void onComplete(String route, List<String> sources, boolean rerankDegraded,
-                        int graphContextChars, boolean mcpToolsUsed);
+                        int graphContextChars, boolean mcpToolsUsed, long employeeId);
         void onError(Throwable error);
     }
 
@@ -86,7 +87,8 @@ public class AgentOrchestrator {
         log.info("[Agent] 路由: {} → {}", query, route);
         EmployeeContext.EmployeeRuntime runtime = employeeContext.resolve(agentId);
         if ("CHAT".equals(route)) {
-            return new AgentAnswer(chatDirect(query, runtime), List.of(), route, false, 0, false);
+            return new AgentAnswer(chatDirect(query, runtime), List.of(), route, false, 0, false,
+                    runtime != null ? runtime.employeeId() : 0);
         }
         // KNOWLEDGE_QA：确定性预检索——不依赖模型是否调用工具
         // （咨询类问题模型常跳过工具凭自身知识作答，产生引用幻觉；预检索后检索空则直接兜底。
@@ -109,7 +111,8 @@ public class AgentOrchestrator {
             if (retrievalEmpty && !mcpSkillsAvailable) {
                 log.info("[Agent] 预检索无结果，使用确定性兜底回答");
                 return new AgentAnswer(NO_ANSWER, List.of(), route, pre.rerankDegraded(),
-                        pre.graphContext().length(), false);
+                        pre.graphContext().length(), false,
+                        runtime != null ? runtime.employeeId() : 0);
             }
             String context = retrievalEmpty
                     ? MCP_FALLBACK_CONTEXT
@@ -132,7 +135,8 @@ public class AgentOrchestrator {
             List<String> sources = agentTools.getSources().isEmpty()
                     ? pre.getSources() : agentTools.getSources();
             return new AgentAnswer(answer, sources, route, pre.rerankDegraded(),
-                    pre.graphContext().length(), mcpUsed);
+                    pre.graphContext().length(), mcpUsed,
+                    runtime != null ? runtime.employeeId() : 0);
         } finally {
             employeeContext.unbind(conversationId);
             com.zzp.rag.mcp.McpCallTracker.clear();
@@ -461,7 +465,8 @@ public class AgentOrchestrator {
                 @Override
                 public void onCompleteResponse(
                         dev.langchain4j.model.chat.response.ChatResponse completeResponse) {
-                    handler.onComplete(route, List.of(), false, 0, false);
+                    handler.onComplete(route, List.of(), false, 0, false,
+                            runtime != null ? runtime.employeeId() : 0);
                 }
 
                 @Override
@@ -489,7 +494,8 @@ public class AgentOrchestrator {
             log.info("[Agent] 预检索无结果，流式下发兜底句式");
             employeeContext.unbind(conversationId);
             handler.onToken(NO_ANSWER);
-            handler.onComplete(route, List.of(), pre.rerankDegraded(), 0, false);
+            handler.onComplete(route, List.of(), pre.rerankDegraded(), 0, false,
+                    runtime != null ? runtime.employeeId() : 0);
             return;
         }
         String context = retrievalEmpty ? MCP_FALLBACK_CONTEXT
@@ -528,7 +534,8 @@ public class AgentOrchestrator {
                             // fixFull 与固定流水线/非流式端点保持一致（### 子标题 → 加粗、- 列表 → 有序）
                             emitChunks(StreamTokenFixer.fixFull(finalAnswer), handler);
                             handler.onComplete(route, sourcesHolder[0], degradedHolder[0],
-                                    pre.graphContext().length(), mcpUsedHolder[0]);
+                                    pre.graphContext().length(), mcpUsedHolder[0],
+                                    runtime != null ? runtime.employeeId() : 0);
                         } finally {
                             employeeContext.unbind(conversationId);
                             com.zzp.rag.mcp.McpCallTracker.clear();

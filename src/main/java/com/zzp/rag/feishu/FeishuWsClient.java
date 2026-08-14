@@ -49,11 +49,18 @@ public class FeishuWsClient {
                         @Override
                         public void handle(P2MessageReceiveV1 event) {
                             EventMessage message = event.getEvent().getMessage();
+                            String openId = "";
+                            try {
+                                openId = event.getEvent().getSender().getSenderId().getOpenId();
+                            } catch (Exception ignored) {
+                                // sender 缺失（罕见）→ 审计回退 anonymous
+                            }
                             bridge.handleMessage(
                                     message.getChatId(),
                                     message.getMessageId(),
                                     message.getMessageType(),
-                                    message.getContent());
+                                    message.getContent(),
+                                    openId);
                         }
                     })
                     .build();

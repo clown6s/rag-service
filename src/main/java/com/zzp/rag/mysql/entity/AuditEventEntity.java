@@ -43,6 +43,9 @@ public class AuditEventEntity {
     private String status;
     private String error;
 
+    /** 回答的数字员工 id（0=默认/未绑定；数字员工治理追溯） */
+    private Long employeeId;
+
     /** 入库时间（DB 默认 CURRENT_TIMESTAMP，聚合时置空） */
     private LocalDateTime createdAt;
 }

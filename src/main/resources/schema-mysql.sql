@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS audit_event (
   total_ms            BIGINT       NOT NULL DEFAULT 0,
   status              VARCHAR(32)  NULL,
   error               VARCHAR(1000) NULL,
+  employee_id         BIGINT       NULL COMMENT '回答的数字员工 id（0=默认；治理追溯）',
   created_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_trace_id (trace_id),
   KEY idx_created_at (created_at),
@@ -85,3 +86,16 @@ CREATE TABLE IF NOT EXISTS alert_event (
   ack_at    DATETIME     NULL,
   UNIQUE KEY uk_rule_code (rule_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='告警事件（规则引擎输出）';
+
+CREATE TABLE IF NOT EXISTS sys_user (
+  id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  username      VARCHAR(64)  NOT NULL,
+  password_hash VARCHAR(128) NOT NULL,
+  salt          VARCHAR(32)  NOT NULL,
+  display_name  VARCHAR(64)  NULL,
+  role          VARCHAR(16)  NOT NULL DEFAULT 'USER' COMMENT 'ADMIN/USER（USER=只读）',
+  status        TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '1启用 0停用',
+  created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_login_at DATETIME     NULL,
+  UNIQUE KEY uk_username (username)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='后台账号（统一身份最小闭环）';

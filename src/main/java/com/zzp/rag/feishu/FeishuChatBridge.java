@@ -56,18 +56,22 @@ public class FeishuChatBridge {
         this.objectMapper = objectMapper;
     }
 
-    /** HTTP 回调模式入口：schema 2.0 事件体 → 拆包 → 处理核心 */
+    /** HTTP 回调模式入口：schema 2.0 事件体 → 拆包 → 处理核心（sender open_id 作审计身份） */
     public void handleEvent(JsonNode event) {
         JsonNode message = event.path("event").path("message");
+        String senderOpenId = event.path("event").path("sender")
+                .path("sender_id").path("open_id").asText("");
         handleMessage(
                 message.path("chat_id").asText(),
                 message.path("message_id").asText(),
                 message.path("message_type").asText(),
-                message.path("content").asText());
+                message.path("content").asText(),
+                senderOpenId);
     }
 
     /** SDK 长连接/HTTP 共用的处理核心：立即返回（事件 ack），处理走工作线程 + messageId 去重 */
-    public void handleMessage(String chatId, String messageId, String messageType, String contentJson) {
+    public void handleMessage(String chatId, String messageId, String messageType, String contentJson,
+                              String senderOpenId) {
         if (messageId == null || messageId.isBlank()) {
             return;
         }
@@ -79,10 +83,13 @@ public class FeishuChatBridge {
         if (seenMessageIds.size() > 2000) {
             seenMessageIds.clear();   // 兜底防膨胀（正常不会到：消息 id 短时窗口去重）
         }
-        worker.execute(() -> doHandle(chatId, messageId, messageType, contentJson));
+        worker.execute(() -> doHandle(chatId, messageId, messageType, contentJson, senderOpenId));
     }
 
-    private void doHandle(String chatId, String messageId, String messageType, String contentJson) {
+    private void doHandle(String chatId, String messageId, String messageType, String contentJson,
+                          String senderOpenId) {
+        // 审计身份：飞书 open_id（无则回退 MDC/请求头/anonymous）
+        String auditUser = senderOpenId != null && !senderOpenId.isBlank() ? senderOpenId : null;
         AuditEvent.AuditContext ctx = AuditEvent.AuditContext.capture();
         String query = null;
         long start = System.currentTimeMillis();
@@ -109,11 +116,12 @@ public class FeishuChatBridge {
             auditService.record(new AuditEvent(
                     ctx.traceId(),
                     LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-                    ctx.user(), ctx.ip(), "feishu/chat",
+                    auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/chat",
                     null, query, 0, answer.sources(), 0,
                     answer.rerankDegraded(), answer.graphContextChars(),
                     AuditEvent.truncate(answer.answer(), 500), answer.answer().length(),
-                    System.currentTimeMillis() - start, "SUCCESS", null));
+                    System.currentTimeMillis() - start, "SUCCESS", null,
+                    answer.employeeId()));
         } catch (Exception e) {
             log.error("[飞书] 消息处理失败 chat={}", chatId, e);
             if (messageId != null) {
@@ -122,10 +130,10 @@ public class FeishuChatBridge {
             auditService.record(new AuditEvent(
                     ctx.traceId(),
                     LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-                    ctx.user(), ctx.ip(), "feishu/chat",
+                    auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/chat",
                     null, query, 0, List.of(), 0,
                     false, 0, null, 0,
-                    System.currentTimeMillis() - start, "FAILED", e.getMessage()));
+                    System.currentTimeMillis() - start, "FAILED", e.getMessage(), 0));
         }
     }
 

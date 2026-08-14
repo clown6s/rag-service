@@ -317,7 +317,8 @@ public class RagChatController {
                 answer != null ? answer.length() : 0,
                 totalMs,
                 status,
-                error);
+                error,
+                0);   // 固定流水线不绑定数字员工
     }
 
     /** 回答过长时截断（控制审计文件体积；归档策略后续按合规要求调整） */

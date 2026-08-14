@@ -203,6 +203,7 @@ public class AuditAggregator {
             e.setTotalMs(event.totalMs());
             e.setStatus(event.status());
             e.setError(event.error());
+            e.setEmployeeId(event.employeeId());
             return e;
         } catch (Exception e) {
             log.warn("[审计聚合] 行解析失败，跳过: {}", line.length() > 80 ? line.substring(0, 80) : line);

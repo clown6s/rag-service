@@ -20,17 +20,18 @@ public interface AuditEventMapper extends BaseMapper<AuditEventEntity> {
             <script>
             INSERT INTO audit_event (trace_id, `timestamp`, `user`, ip, endpoint, category, query,
               history_count, sources, retrieval_ms, rerank_degraded, graph_context_chars,
-              answer_preview, answer_length, total_ms, status, error) VALUES
+              answer_preview, answer_length, total_ms, status, error, employee_id) VALUES
             <foreach collection="list" item="e" separator=",">
               (#{e.traceId}, #{e.timestamp}, #{e.user}, #{e.ip}, #{e.endpoint}, #{e.category}, #{e.query},
                #{e.historyCount}, #{e.sources}, #{e.retrievalMs}, #{e.rerankDegraded}, #{e.graphContextChars},
-               #{e.answerPreview}, #{e.answerLength}, #{e.totalMs}, #{e.status}, #{e.error})
+               #{e.answerPreview}, #{e.answerLength}, #{e.totalMs}, #{e.status}, #{e.error}, #{e.employeeId})
             </foreach>
             ON DUPLICATE KEY UPDATE
               query = VALUES(query), sources = VALUES(sources), retrieval_ms = VALUES(retrieval_ms),
               rerank_degraded = VALUES(rerank_degraded), graph_context_chars = VALUES(graph_context_chars),
               answer_preview = VALUES(answer_preview), answer_length = VALUES(answer_length),
-              total_ms = VALUES(total_ms), status = VALUES(status), error = VALUES(error)
+              total_ms = VALUES(total_ms), status = VALUES(status), error = VALUES(error),
+              employee_id = VALUES(employee_id)
             </script>
             """)
     int batchUpsert(@Param("list") List<AuditEventEntity> list);

@@ -95,7 +95,7 @@ public class AgentChatController {
             }
             result = new AgentOrchestrator.AgentAnswer(
                     answer, result.sources(), result.route(), result.rerankDegraded(),
-                    result.graphContextChars(), result.mcpToolsUsed());
+                    result.graphContextChars(), result.mcpToolsUsed(), result.employeeId());
             auditService.record(buildAuditEvent(req, result, ctx,
                     System.currentTimeMillis() - start, "SUCCESS", null));
             return ApiResponse.ok(new AgentChatResponse(
@@ -154,7 +154,7 @@ public class AgentChatController {
 
                     @Override
                     public void onComplete(String route, List<String> sources, boolean degraded,
-                                           int graphContextChars, boolean mcpToolsUsed) {
+                                           int graphContextChars, boolean mcpToolsUsed, long employeeId) {
                         if (closed.get()) {
                             return;   // 客户端已断开，不再下发也不记审计
                         }
@@ -178,7 +178,7 @@ public class AgentChatController {
                             auditService.record(buildAuditEvent(req,
                                     new AgentOrchestrator.AgentAnswer(
                                             fullAnswer.toString(), sources, route, degraded,
-                                            graphContextChars, mcpToolsUsed),
+                                            graphContextChars, mcpToolsUsed, employeeId),
                                     auditCtx, System.currentTimeMillis() - start, "SUCCESS", null));
                         }
                     }
@@ -270,7 +270,8 @@ public class AgentChatController {
                 answer != null ? answer.length() : 0,
                 totalMs,
                 status,
-                error);
+                error,
+                result != null ? result.employeeId() : 0);
     }
 
     private String resolveConversationId(String conversationId) {

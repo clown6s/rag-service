@@ -29,7 +29,11 @@ public record AuditEvent(
         int answerLength,         // 回答完整长度
         long totalMs,             // 端到端耗时
         String status,            // SUCCESS | FAILED | GENERATION_FAILED | RETRIEVAL_FAILED
-        String error) {           // 失败原因
+        String error,             // 失败原因
+        long employeeId) {        // 回答的数字员工 id（0 = 默认员工/未绑定；数字员工治理追溯）
+
+    /** MDC 键：鉴权拦截器写入的认证用户名（AuditContext.capture 优先读取） */
+    public static final String MDC_USER_KEY = "rag.auth.user";
 
     /** 回答过长时截断（控制审计文件体积；归档策略后续按合规要求调整） */
     public static String truncate(String s, int max) {
@@ -47,7 +51,11 @@ public record AuditEvent(
             ServletRequestAttributes attrs =
                     (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
             HttpServletRequest req = attrs != null ? attrs.getRequest() : null;
-            String user = req != null ? req.getHeader("X-User-Id") : null;
+            // 身份优先级：MDC（鉴权拦截器写入，后台登录态）> X-User-Id 头 > anonymous
+            String user = MDC.get(MDC_USER_KEY);
+            if (user == null || user.isBlank()) {
+                user = req != null ? req.getHeader("X-User-Id") : null;
+            }
             if (user == null || user.isBlank()) {
                 user = "anonymous";
             }
