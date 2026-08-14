@@ -167,7 +167,7 @@ rag:
       webhook-url: ${FEISHU_ALERT_WEBHOOK_URL:}     # 飞书群机器人 webhook（配置才启用推送；软依赖）
       webhook-sign-secret: ${FEISHU_ALERT_WEBHOOK_SIGN_SECRET:}  # 群机器人签名密钥（可选）
   feishu:
-    enabled: false                          # 飞书接入总开关（软依赖：默认关闭，平台不依赖任何 IM）
+    enabled: ${FEISHU_ENABLED:false}        # 飞书接入总开关（软依赖：默认关闭，平台不依赖任何 IM）
     base-url: ${FEISHU_BASE_URL:https://open.feishu.cn}  # 开放平台域名（私有化改自有域名，代码零改动）
     app-id: ${FEISHU_APP_ID:}
     app-secret: ${FEISHU_APP_SECRET:}
