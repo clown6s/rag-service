@@ -126,7 +126,11 @@ public class LawCitationGuard {
     private boolean articleExists(String lawName, String articleNo) {
         try {
             String cn = toChineseNumeral(articleNo);
-            String filter = "title like \"%" + lawName + "%\" and text like \"%第" + cn + "条%\"";
+            // title 过滤用核心名片段（剥前缀取尾部 ≤6 字）而非全称——
+            // 历史坑：标题笔误（"中华人工共和国刑法"缺"民"）导致全称 LIKE 落空，
+            // 正确引用被误标"条文号可能有误"
+            String fragment = titleFragment(lawName);
+            String filter = "title like \"%" + fragment + "%\" and text like \"%第" + cn + "条%\"";
             QueryResp resp = milvusClient.query(QueryReq.builder()
                     .collectionName(collectionName)
                     .outputFields(List.of("id"))
@@ -138,6 +142,13 @@ public class LawCitationGuard {
             log.debug("[引用校验] 条文号查询失败 {} 第{}条: {}", lawName, articleNo, e.getMessage());
             return true;   // 查询失败不误伤（软依赖）
         }
+    }
+
+    /** 法名核心片段：剥"中华人民共和国"前缀后取尾部 ≤6 字（"刑法"/"民法典"/"促进法"），
+     *  对标题笔误鲁棒（"中华人工共和国刑法"仍含"刑法"） */
+    private String titleFragment(String lawName) {
+        String stripped = lawName.replaceAll("^中华人民共和国", "");
+        return stripped.length() > 6 ? stripped.substring(stripped.length() - 6) : stripped;
     }
 
     /** 阿拉伯数字 → 中文数字（1-9999；已为中文则原样返回） */
