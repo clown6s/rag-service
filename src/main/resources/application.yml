@@ -59,7 +59,7 @@ langchain4j:
       graph:
         model-name: qwen-plus            # 实体抽取（turbo 的 JSON 生成不稳定，频繁截断）
       verify:
-        model-name: qwen-turbo           # 答案事实校验（修订输出完整回答，maxTokens=4096）
+        model-name: qwen-plus            # 答案事实校验（plus：补全识别显著强于 turbo；修订输出完整回答，maxTokens=4096）
 
   # Embedding
   embedding:
