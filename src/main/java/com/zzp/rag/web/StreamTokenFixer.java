@@ -45,8 +45,13 @@ public final class StreamTokenFixer {
         result = result.replaceAll("(?<=[。！？；])>\\s*", "");
         // 4. 连续冒号塌缩（"：："是模型常见手滑）
         result = result.replaceAll("：{2,}", "：");
-        // 5. 未闭合的加粗行（模型写 "**标题1.内容" 漏了收尾 **）→ 剥星号按普通文本
-        result = result.replaceAll("(?m)^\\*\\*([^*\\n]{1,60})$", "$1");
+        // 5. 未闭合的加粗行（行首 ** 且行内无任何收尾 *）→ 剥星号按普通文本
+        //    （无长度限制；历史坑：60 字上限漏掉"**标题1.诊断标准：…"这类长标题行）
+        result = result.replaceAll("(?m)^\\*\\*([^*\\n]+)$", "$1");
+        // 6. 句末标点后紧跟编号项 → 换行（"…测量）。 2. 测量工具"拆成两行）
+        result = result.replaceAll("(?<=[。！？；])\\s*(?=\\d+[.、])", "\n");
+        // 7. 标题与表格粘连（"⚠️ 标题| 列1 | 列2 |"同行）→ 首个 | 前换行
+        result = result.replaceAll("(?m)^([^|\\n]{1,60}?)(\\s*\\|.*\\|.*)$", "$1\n$2");
         return result;
     }
 
