@@ -12,11 +12,25 @@ package com.zzp.rag.mcp;
 public final class McpCallTracker {
 
     private static final ThreadLocal<Boolean> CALLED = new ThreadLocal<>();
+    private static final ThreadLocal<StringBuilder> TOOL_RESULTS = new ThreadLocal<>();
 
     private McpCallTracker() {}
 
     public static void markCalled() {
         CALLED.set(true);
+    }
+
+    /** 追加一次 MCP 工具返回文本（并入校验依据：MCP 数据可核，防夹带编造） */
+    public static void appendResult(String text) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        StringBuilder sb = TOOL_RESULTS.get();
+        if (sb == null) {
+            sb = new StringBuilder();
+            TOOL_RESULTS.set(sb);
+        }
+        sb.append(text).append('\n');
     }
 
     public static boolean consumeCalled() {
@@ -25,7 +39,15 @@ public final class McpCallTracker {
         return Boolean.TRUE.equals(v);
     }
 
+    /** 取走本轮全部工具结果文本（消费后清空） */
+    public static String consumeResults() {
+        StringBuilder sb = TOOL_RESULTS.get();
+        TOOL_RESULTS.remove();
+        return sb != null ? sb.toString() : "";
+    }
+
     public static void clear() {
         CALLED.remove();
+        TOOL_RESULTS.remove();
     }
 }

@@ -42,7 +42,7 @@ langchain4j:
         model-name: qwen-plus
         temperature: 0.1
         max-tokens: 1024
-        timeout: 30s                     # 路由失败快速降级（历史坑：限流时 120s 卡死）
+        timeout: 10s                     # 路由失败快速降级（历史坑：限流时 120s 卡死；30s→10s 收窄最坏等待）
       # 轻量任务小模型（省钱省延迟）
       contextual:
         model-name: qwen-turbo           # 文档摘要

@@ -50,6 +50,8 @@ public class McpToolExecutor implements ToolExecutor {
             if (Boolean.TRUE.equals(result.isError())) {
                 return "工具执行失败: " + text;
             }
+            // 工具结果并入校验依据（防模型在工具数据外夹带编造，如"研发部共42人"）
+            com.zzp.rag.mcp.McpCallTracker.appendResult(text);
             return text.isEmpty() ? "（工具无返回内容）" : text;
         } catch (Exception e) {
             handle.markUnhealthy(e.getMessage());

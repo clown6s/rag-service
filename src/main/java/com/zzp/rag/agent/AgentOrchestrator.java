@@ -102,10 +102,15 @@ public class AgentOrchestrator {
         boolean graphOnly = !retrievalEmpty && pre.segments().isEmpty() && !pre.graphContext().isBlank();
         try {
             String answer = agentService.chat(conversationId, enrich(query, context, graphOnly));
-            // MCP 工具被调用过：答案是权威业务数据，跳过知识库校验（防误删）
             boolean mcpUsed = com.zzp.rag.mcp.McpCallTracker.consumeCalled();
             if (mcpUsed) {
-                log.info("[Agent] 本轮使用 MCP 工具，跳过知识库校验");
+                // MCP 轮校验依据 = 上下文 + 工具执行结果：MCP 数据可核（不误删），
+                // 工具结果之外的夹带编造（如"研发部共42人"）仍会被删
+                log.info("[Agent] 本轮使用 MCP 工具，按工具结果校验");
+                String toolResults = com.zzp.rag.mcp.McpCallTracker.consumeResults();
+                answer = verify(answer,
+                        context + "\n\n[工具执行结果]\n" + toolResults + "\n[/工具执行结果]",
+                        graphOnly);
             } else {
                 answer = verify(answer, context, graphOnly);
             }
@@ -378,9 +383,10 @@ public class AgentOrchestrator {
         final List<String>[] sourcesHolder = (List<String>[]) new List[]{pre.getSources()};
         final boolean[] degradedHolder = {pre.rerankDegraded()};
         final boolean[] mcpUsedHolder = {false};
+        final StringBuffer mcpResultsHolder = new StringBuffer();
         // 答案校验：服务端先收齐全文 → 对照检索资料核查 → 再下发
         // （token 不再直通前端，换取"无依据内容不出门"的保证；工具事件仍实时透传；
-        //   本轮用过 MCP 工具则跳过知识库校验——MCP 数据是权威业务数据非模型知识）
+        //   本轮用过 MCP 工具则按"上下文+工具结果"校验——MCP 数据可核，夹带编造仍删）
         StringBuffer full = new StringBuffer();
         agentService.chatStream(conversationId, enriched)
                 .onPartialResponse(full::append)
@@ -388,12 +394,16 @@ public class AgentOrchestrator {
                     sourcesHolder[0] = agentTools.getSources();
                     degradedHolder[0] = agentTools.isRerankDegraded();
                     mcpUsedHolder[0] |= com.zzp.rag.mcp.McpCallTracker.consumeCalled();
+                    mcpResultsHolder.append(com.zzp.rag.mcp.McpCallTracker.consumeResults());
                     handler.onToolExecuted(req.request().name(), req.request().arguments(), false);
                 })
                 .onCompleteResponse(resp -> {
                     try {
                         String finalAnswer = mcpUsedHolder[0]
-                                ? full.toString()
+                                ? verify(full.toString(),
+                                        context + "\n\n[工具执行结果]\n" + mcpResultsHolder
+                                                + "\n[/工具执行结果]",
+                                        graphOnly)
                                 : verify(full.toString(), context, graphOnly);
                         // fixFull 与固定流水线/非流式端点保持一致（### 子标题 → 加粗、- 列表 → 有序）
                         emitChunks(StreamTokenFixer.fixFull(finalAnswer), handler);
