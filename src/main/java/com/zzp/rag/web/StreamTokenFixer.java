@@ -247,8 +247,8 @@ public final class StreamTokenFixer {
                 lastIndent = indent;
                 lines[i] = indent + c + ". " + m.group(2);
             } else if (stripped.isEmpty()) {
-                counters.clear();     // 空行 = 段间分隔，重置
-                lastIndent = null;
+                // 空行不重置：模型常在列表项间插空行（"1. A\n\n1. B" 是同一列表的续项，
+                // 重置会打成 1,1,2,1）；真正的段间分隔由下一非编号行（标题/正文）触发重置
             } else if (lastIndent == null || indent.length() > lastIndent.length()) {
                 // 更深缩进的非编号行 = 上一列表项的续行（条目内容折行），不打断编号
                 // （如 "1. 民法责任：\n  ...续行段落...\n1. 转化型抢劫" 的第二个 1. 应改为 2.）
