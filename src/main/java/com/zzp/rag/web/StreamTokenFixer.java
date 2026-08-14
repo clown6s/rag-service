@@ -34,11 +34,9 @@ public final class StreamTokenFixer {
     public static String fixFull(String text) {
         if (text == null) return text;
         String result = sanitizeCitations(fixToken(text));
-        // 0. 行首装饰性 emoji 剥除（✅/📌/⚠️/🩺/🌐/📜/⚖️/🧩 是模型的分节标记漂移，
-        //    标题语义由加粗承担，emoji 保留只会干扰渲染与后续规则匹配；
-        //    含 "**📜 标题" 这种 emoji 嵌在加粗开头的情况）
-        result = result.replaceAll("(?m)^[✅📌⚠️🩺🌐📜⚖️🧩]+\\s*", "");
-        result = result.replaceAll("(?m)^(\\*\\*)[✅📌⚠️🩺🌐📜⚖️🧩]+\\s*", "$1");
+        // 0. 装饰性 emoji 剥除——模型的分节/强调标记漂移（✅📌⚠️🩺🌐📜⚖️🧩🔍🌟），
+        //    语义由加粗承担；行首行内都剥（这些符号在本平台答案里纯装饰，无信息量）
+        result = result.replaceAll("[✅📌⚠️🩺🌐📜⚖️🧩🔍🌟]+\\s*", "");
         // 0.05 整行加粗的标题尾部空格塌缩（"**标题  **" 的收尾空格会让 CommonMark
         //      不识别闭合 → 原样显示星号）
         result = result.replaceAll("(?m)^(\\*\\*[^*\\n]+?)\\s+(\\*\\*)[ \\t]*$", "$1$2");
@@ -104,6 +102,9 @@ public final class StreamTokenFixer {
     public static String fixToken(String token) {
         if (token == null || token.isEmpty()) return token;
         String result = token;
+        // 0. 全角/数学变体归一：∗（U+2217 数学星号，模型常当加粗标记用）→ ASCII *；
+        //    ＄（U+FF04 全角美元）→ $（LaTeX 定界符）
+        result = result.replace('∗', '*').replace('＄', '$');
         // 1. 破折号 – — 替换为 ：
         result = result.replaceAll("[\\u2013\\u2014]", "：");
         // 2. 数字列表挤在同一行： "象1.岁" → "象\n1. 岁"
