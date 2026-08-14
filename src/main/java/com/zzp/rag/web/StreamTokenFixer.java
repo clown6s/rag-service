@@ -93,6 +93,9 @@ public final class StreamTokenFixer {
         //      含 GraphStore 的 "- 实体 --[关系]--> 实体" 与模型转写变体）
         result = result.replaceAll(
                 "(?m)^[ \\t]*\\d*\\.?\\s*[^-–—\\n]{1,40}\\s*[-–—]{2,3}\\s*\\[[^\\]\\n]*\\][-–—]{0,2}\\s*>\\s*.+$", "");
+        // 11. 问答对模板泄漏：Q&A 切分文档的 chunk 含"问：…答：…"，
+        //     模型逐条复制"答："原文（红旗渠实况）→ 剥前缀保留内容
+        result = result.replaceAll("(?m)^[ \\t]*\\d*\\.?\\s*[问答][：:]\\s*", "");
         // 剥除后压缩连续空行
         result = result.replaceAll("\\n{3,}", "\n\n");
         return result;
