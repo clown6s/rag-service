@@ -34,9 +34,9 @@ public final class StreamTokenFixer {
     public static String fixFull(String text) {
         if (text == null) return text;
         String result = sanitizeCitations(fixToken(text));
-        // 0. 装饰性 emoji 剥除——模型的分节/强调标记漂移（✅📌⚠️🩺🌐📜⚖️🧩🔍🌟），
+        // 0. 装饰性 emoji 剥除——模型的分节/强调标记漂移（✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯），
         //    语义由加粗承担；行首行内都剥（这些符号在本平台答案里纯装饰，无信息量）
-        result = result.replaceAll("[✅📌⚠️🩺🌐📜⚖️🧩🔍🌟]+\\s*", "");
+        result = result.replaceAll("[✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯]+\\s*", "");
         // 0.05 整行加粗的标题尾部空格塌缩（"**标题  **" 的收尾空格会让 CommonMark
         //      不识别闭合 → 原样显示星号）
         result = result.replaceAll("(?m)^(\\*\\*[^*\\n]+?)\\s+(\\*\\*)[ \\t]*$", "$1$2");
@@ -47,6 +47,11 @@ public final class StreamTokenFixer {
         // 1.5 ▶ 内联/行首列表符 → 先转无序行，再随下一步统一有序编号
         //     （"原则：▶ 小剂量 ▶ 长效" → 拆行编号；须在 convertBulletsToNumbered 之前）
         result = result.replaceAll("\\s*▶\\s*", "\n- ");
+        // 1.6 "注意： -高血压急症" 行中列表符 → 断行成列表项（须在编号转换之前）
+        result = result.replaceAll("(?<=[：:])\\s*-\\s*(?=[^\\s])", "\n- ");
+        // 1.7 行中编号断行："**标题**1. 内容" → 编号项前补换行
+        //     （模型把列表起点粘在标题/正文后；"N. " 后跟中文/字母才算列表项）
+        result = result.replaceAll("(?<=[^\\s\\d])\\s*(?=\\d+\\.\\s+[\\u4e00-\\u9fa5a-zA-Z（])", "\n");
         // 2. - / * / 🔹 无序列表 → 有序列表（规则要求 1. 2. 3.；全行加粗的章节标题行不参与编号）
         result = convertBulletsToNumbered(result);
         // 2.5 全行加粗的编号行（模型的编号章节标题，如 "9. **关联罪名**"）→ 剥编号还原加粗标题
@@ -70,7 +75,81 @@ public final class StreamTokenFixer {
         // 8. 表格行之间的空行塌缩：模型在表格行间插空行，GFM 表格会拆散成多段
         //    （"| 人群 |...|\n\n|--- |" → 连续行）
         result = result.replaceAll("(?m)\\|[ \\t]*\\n[ \\t]*\\n(?=[ \\t]*\\|)", "|\n");
+        // 9. 表格净化：残缺表格残留是渲染重灾区（"| |------ |------| |" 纯语法噪声）——
+        //    a. 分隔行（仅 | - : 空格）整行删除
+        //    b. 不成表的行（缺行首/行尾管道）→ 剥管道降级为文本行
+        //    c. 成表行 → 单元格归一化（| 类型 | 特点 |）
+        result = sanitizeTables(result);
         return result;
+    }
+
+    /** 表格净化：删分隔行、不成表降级文本、成表归一化、内联粘连表格拆行（详见 fixFull 规则 9） */
+    private static String sanitizeTables(String text) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (String line : text.split("\n", -1)) {
+            String stripped = line.strip();
+            if (stripped.isEmpty() || !stripped.contains("|")) {
+                out.add(line);
+                continue;
+            }
+            // 内联粘连表格："| 类型 | 特点 | |--- |--- | | 继发 | ... |"（表头+分隔+数据行挤一行）
+            // → 先按分隔单元格拆成多行再走常规净化
+            if (stripped.contains("---") && !stripped.matches("[\\s|:\\-]+")) {
+                out.addAll(java.util.List.of(splitInlineTable(stripped).split("\n", -1)));
+                continue;
+            }
+            if (stripped.contains("-") && stripped.matches("[\\s|:\\-]+")) {
+                out.add("");   // 纯分隔行（|--- |---| 等）
+                continue;
+            }
+            boolean wellFormed = stripped.startsWith("|") && stripped.endsWith("|");
+            if (!wellFormed) {
+                out.add(stripped.replace("|", " ").replaceAll("\\s{2,}", " ").strip());
+            } else {
+                out.add(stripped
+                        .replaceAll("\\s*\\|\\s*", " | ")
+                        .replaceAll("^\\|\\s*", "| ")
+                        .replaceAll("\\s*\\|$", " |"));
+            }
+        }
+        return String.join("\n", out);
+    }
+
+    /**
+     * 内联粘连表格拆行：按单元格扫描，分隔单元格（---）起一行、内容单元格起一行。
+     * "| A | B | |--- |--- | | C | D |" → "| A | B |\n|--- |--- |\n| C | D |"
+     */
+    private static String splitInlineTable(String stripped) {
+        StringBuilder sb = new StringBuilder();
+        StringBuilder row = new StringBuilder();
+        boolean inSeparator = false;
+        for (String cell : stripped.split("\\|", -1)) {
+            String c = cell.strip();
+            boolean sep = c.contains("-") && c.matches("[-:]+");
+            if (sep) {
+                if (!inSeparator) {
+                    if (row.length() > 0) {
+                        sb.append(row).append("|\n");
+                    }
+                    row.setLength(0);
+                    inSeparator = true;
+                }
+                row.append("| ").append(c).append(" ");
+            } else if (!c.isEmpty()) {
+                if (inSeparator) {
+                    if (row.length() > 0) {
+                        sb.append(row).append("|\n");
+                    }
+                    row.setLength(0);
+                    inSeparator = false;
+                }
+                row.append("| ").append(c).append(" ");
+            }
+        }
+        if (row.length() > 0) {
+            sb.append(row).append("|");
+        }
+        return sb.toString().strip();
     }
 
     /** 把行首 `- ` / `* ` / `🔹 ` 的无序列表按出现顺序转为 `N. ` 有序列表
