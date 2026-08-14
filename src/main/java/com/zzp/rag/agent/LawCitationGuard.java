@@ -70,8 +70,7 @@ public class LawCitationGuard {
         while (m.find()) {
             String law = m.group(1);
             String article = m.group(2);
-            boolean lawKnown = known.stream()
-                    .anyMatch(t -> t.contains(law) || law.contains(t));
+            boolean lawKnown = known.stream().anyMatch(t -> titleMatches(t, law));
             if (!lawKnown) {
                 unknown.add(law);
                 continue;   // 法本身库外，条文号无需再查
@@ -85,8 +84,7 @@ public class LawCitationGuard {
         Matcher m2 = LAW_CITATION.matcher(answer);
         while (m2.find()) {
             String cited = m2.group(1);
-            boolean isKnown = known.stream()
-                    .anyMatch(t -> t.contains(cited) || cited.contains(t));
+            boolean isKnown = known.stream().anyMatch(t -> titleMatches(t, cited));
             if (!isKnown) {
                 unknown.add(cited);
             }
@@ -104,6 +102,19 @@ public class LawCitationGuard {
         }
         sb.append("请以知识库内容为准。");
         return sb.toString();
+    }
+
+    /**
+     * 法名匹配：剥离文件后缀后双向包含——
+     * 兼容《中华人民共和国家庭教育促进法》（全称）vs "家庭教育促进法.pdf"（库标题带后缀）的差异。
+     * 历史坑：直接 contains 比对时 .pdf 尾巴导致两边都匹配不上 → 库内法律被误标"未收录"。
+     */
+    private static boolean titleMatches(String title, String cited) {
+        if (title == null || cited == null || cited.isBlank()) {
+            return false;
+        }
+        String clean = title.replaceAll("\\.(?i)(pdf|docx?|md|txt|html)$", "");
+        return clean.contains(cited) || cited.contains(clean);
     }
 
     /** 条文号存在性校验：知识库中该法是否存在"第N条"chunk（中文数字形式） */
