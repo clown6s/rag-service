@@ -36,6 +36,16 @@ public class FeishuChatBridge {
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
 
+    /** 对话生成要几十秒，事件处理必须异步（SDK ack 后飞书才不重投）；按 messageId 去重兜底重投 */
+    private final java.util.concurrent.ExecutorService worker =
+            java.util.concurrent.Executors.newFixedThreadPool(4, r -> {
+                Thread t = new Thread(r, "feishu-chat");
+                t.setDaemon(true);
+                return t;
+            });
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> seenMessageIds =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     public FeishuChatBridge(FeishuConfig config, FeishuClient client,
                             AgentOrchestrator orchestrator, AuditService auditService,
                             ObjectMapper objectMapper) {
@@ -56,14 +66,28 @@ public class FeishuChatBridge {
                 message.path("content").asText());
     }
 
-    /** SDK 长连接/HTTP 共用的处理核心 */
+    /** SDK 长连接/HTTP 共用的处理核心：立即返回（事件 ack），处理走工作线程 + messageId 去重 */
     public void handleMessage(String chatId, String messageId, String messageType, String contentJson) {
+        if (messageId == null || messageId.isBlank()) {
+            return;
+        }
+        Long prev = seenMessageIds.putIfAbsent(messageId, System.currentTimeMillis());
+        if (prev != null) {
+            log.info("[飞书] 重复消息跳过（重投） messageId={}", messageId);
+            return;
+        }
+        if (seenMessageIds.size() > 2000) {
+            seenMessageIds.clear();   // 兜底防膨胀（正常不会到：消息 id 短时窗口去重）
+        }
+        worker.execute(() -> doHandle(chatId, messageId, messageType, contentJson));
+    }
+
+    private void doHandle(String chatId, String messageId, String messageType, String contentJson) {
         AuditEvent.AuditContext ctx = AuditEvent.AuditContext.capture();
         String query = null;
         long start = System.currentTimeMillis();
         try {
-            if (!"text".equals(messageType) || chatId == null || chatId.isBlank()
-                    || messageId == null || messageId.isBlank()) {
+            if (!"text".equals(messageType) || chatId == null || chatId.isBlank()) {
                 log.info("[飞书] 跳过非文本消息 chat={} type={}", chatId, messageType);
                 return;
             }
