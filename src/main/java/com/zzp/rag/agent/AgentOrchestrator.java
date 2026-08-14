@@ -213,6 +213,10 @@ public class AgentOrchestrator {
                     break;
                 }
             }
+            // 延伸服务/元话语句式（提示词禁但模型偶犯，确定性拦截）
+            if (!bad && EXTENSION_OFFER.matcher(sentence).find()) {
+                bad = true;
+            }
             if (bad) {
                 removed++;
             } else {
@@ -270,6 +274,10 @@ public class AgentOrchestrator {
                 .replaceAll("\\s+", "")
                 .replaceAll("[：:、～~–—]", "-");
     }
+
+    /** 延伸服务/自我推销句式（"欢迎告诉我方向""如需我生成XX"——提示词禁但模型偶犯） */
+    private static final java.util.regex.Pattern EXTENSION_OFFER = java.util.regex.Pattern.compile(
+            "欢迎随时|欢迎告诉|如需我|需要我帮|我可以为你|随时提出|可立即为你");
 
     /**
      * 确定性术语核对：提取回答中出现的缩写/带数字术语/中文药物名/数值单位，
