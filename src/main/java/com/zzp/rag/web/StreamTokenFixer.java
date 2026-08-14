@@ -88,6 +88,13 @@ public final class StreamTokenFixer {
         //    b. 不成表的行（缺行首/行尾管道）→ 剥管道降级为文本行
         //    c. 成表行 → 单元格归一化（| 类型 | 特点 |）
         result = sanitizeTables(result);
+        // 10. 图谱三元组行剥除："红旗渠 -- [与...同属]-- > 云台山" 类原始关系行
+        //     （模型把 queryEntityGraph 工具结果原样贴进回答的垃圾输出；
+        //      含 GraphStore 的 "- 实体 --[关系]--> 实体" 与模型转写变体）
+        result = result.replaceAll(
+                "(?m)^[ \\t]*\\d*\\.?\\s*[^-–—\\n]{1,40}\\s*[-–—]{2,3}\\s*\\[[^\\]\\n]*\\][-–—]{0,2}\\s*>\\s*.+$", "");
+        // 剥除后压缩连续空行
+        result = result.replaceAll("\\n{3,}", "\n\n");
         return result;
     }
 

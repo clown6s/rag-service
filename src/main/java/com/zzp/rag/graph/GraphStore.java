@@ -205,7 +205,7 @@ public class GraphStore {
 
         public boolean isEmpty() { return paths.isEmpty(); }
 
-        /** 格式化为 LLM 可读的文本 */
+        /** 格式化为 LLM 可读的文本（上限 20 条防巨量三元组灌入上下文） */
         public String format() {
             if (paths.isEmpty()) return "";
             var seen = new LinkedHashSet<String>();
@@ -213,7 +213,7 @@ public class GraphStore {
                 String arrow = String.join(" → ", path.relTypes());
                 seen.add("- %s --[%s]--> %s".formatted(path.source(), arrow, path.target()));
             }
-            return seen.stream().collect(Collectors.joining("\n"));
+            return seen.stream().limit(20).collect(Collectors.joining("\n"));
         }
     }
 }
