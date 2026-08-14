@@ -145,11 +145,13 @@ public class FeishuChatBridge {
     }
 
     /** Markdown → 飞书纯文本（text 消息不支持 markdown 渲染）：
-     *  剥加粗/斜体星号，## 标题转【】，保留有序编号与换行 */
+     *  剥加粗/斜体星号，## 标题转【】，<br> 转换行、其余 HTML 标签剥除，保留有序编号与换行 */
     private String toFeishuText(String markdown) {
         return markdown
                 .replaceAll("(?m)^##\\s+(.+)$", "【$1】")
                 .replaceAll("\\*\\*([^*\\n]+)\\*\\*", "$1")
+                .replaceAll("(?i)<br\\s*/?>", "\n")
+                .replaceAll("<[^>]+>", "")
                 .replaceAll("(?m)^[\\s>]*>\\s*", "")
                 .strip();
     }

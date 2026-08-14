@@ -34,12 +34,15 @@ public final class StreamTokenFixer {
     public static String fixFull(String text) {
         if (text == null) return text;
         String result = sanitizeCitations(fixToken(text));
-        // 0. 装饰性 emoji 剥除——模型的分节/强调标记漂移（✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯），
+        // 0. 装饰性 emoji 剥除——模型的分节/强调标记漂移（✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯💡💊❗），
         //    语义由加粗承担；行首行内都剥（这些符号在本平台答案里纯装饰，无信息量）
-        result = result.replaceAll("[✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯]+\\s*", "");
+        result = result.replaceAll("[✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯💡💊❗]+\\s*", "");
         // 0.05 整行加粗的标题尾部空格塌缩（"**标题  **" 的收尾空格会让 CommonMark
         //      不识别闭合 → 原样显示星号）
         result = result.replaceAll("(?m)^(\\*\\*[^*\\n]+?)\\s+(\\*\\*)[ \\t]*$", "$1$2");
+        // 0.06 硬删后空壳清理："（如、等）"——校验层删除术语后残留的空枚举壳
+        result = result.replaceAll("[（(]\\s*如\\s*[、，]?\\s*等\\s*[）)]", "");
+        result = result.replaceAll("如\\s*[、，]\\s*等", "");
         // 0.1 "---### 标题" 粘连 → "### 标题"（LLM 常把分隔线写进标题行，直接破坏渲染）
         result = result.replaceAll("(?m)^-{2,}\\s*(#{1,3})(?=\\s)", "$1");
         // 1. ### 子标题 → 加粗段落（规则只允许一个 ## 主标题）
@@ -52,6 +55,11 @@ public final class StreamTokenFixer {
         // 1.7 行中编号断行："**标题**1. 内容" → 编号项前补换行
         //     （模型把列表起点粘在标题/正文后；"N. " 后跟中文/字母才算列表项）
         result = result.replaceAll("(?<=[^\\s\\d])\\s*(?=\\d+\\.\\s+[\\u4e00-\\u9fa5a-zA-Z（])", "\n");
+        // 1.8 标签粘连断行："测量部位：上臂肱动脉 测量场所：诊所" → 短标签（≤8 字）前换行。
+        //     前导约束：标签前必须是空格（且空格前不是数字/点号，防拆"4. 眼："这类编号项）
+        //     或句末标点——避免把词内部的"工具："（测量工具）误断
+        result = result.replaceAll(
+                "(?<=(?<![.\\d])\\s|[。；！？）】\\n])\\s*(?=[\\u4e00-\\u9fa5]{1,8}：)", "\n");
         // 2. - / * / 🔹 无序列表 → 有序列表（规则要求 1. 2. 3.；全行加粗的章节标题行不参与编号）
         result = convertBulletsToNumbered(result);
         // 2.5 全行加粗的编号行（模型的编号章节标题，如 "9. **关联罪名**"）→ 剥编号还原加粗标题
@@ -167,7 +175,8 @@ public final class StreamTokenFixer {
                 counter = 0;
                 lines[i] = indent + stripped.substring(2).strip();
             } else if (stripped.startsWith("- ") || stripped.startsWith("* ")
-                    || stripped.startsWith("🔹 ") || stripped.startsWith("→ ")) {
+                    || stripped.startsWith("🔹 ") || stripped.startsWith("→ ")
+                    || stripped.startsWith("• ")) {
                 counter++;
                 lines[i] = indent + counter + ". " + stripped.substring(2);
             } else if (!stripped.isEmpty()) {
