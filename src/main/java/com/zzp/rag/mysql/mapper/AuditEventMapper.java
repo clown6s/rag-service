@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -56,4 +57,12 @@ public interface AuditEventMapper extends BaseMapper<AuditEventEntity> {
             ORDER BY hour
             """)
     List<Map<String, Object>> hourlyDistribution();
+
+    /** 告警引擎：窗口内非成功事件数（status 为 FAILED / GENERATION_FAILED / RETRIEVAL_FAILED 都算错） */
+    @Select("SELECT COUNT(*) FROM audit_event WHERE created_at >= #{since} AND status <> 'SUCCESS'")
+    long windowErrorCount(@Param("since") LocalDateTime since);
+
+    /** 告警引擎：窗口内平均端到端耗时（毫秒；无数据返回 null） */
+    @Select("SELECT AVG(total_ms) FROM audit_event WHERE created_at >= #{since}")
+    Double windowAvgMs(@Param("since") LocalDateTime since);
 }

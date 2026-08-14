@@ -70,3 +70,18 @@ CREATE TABLE IF NOT EXISTS skill_employee (
   PRIMARY KEY (employee_id, skill_id),
   KEY idx_skill_id (skill_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数字员工-技能授权';
+
+CREATE TABLE IF NOT EXISTS alert_event (
+  id        BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  rule_code VARCHAR(64)  NOT NULL COMMENT '规则编码，唯一：一规则一行，重触发原地更新',
+  level     VARCHAR(16)  NOT NULL DEFAULT 'WARNING' COMMENT 'WARNING/CRITICAL',
+  title     VARCHAR(255) NOT NULL,
+  detail    TEXT         NULL,
+  status    VARCHAR(16)  NOT NULL DEFAULT 'OPEN' COMMENT 'OPEN/ACKNOWLEDGED/RESOLVED',
+  first_at  DATETIME     NOT NULL,
+  last_at   DATETIME     NOT NULL,
+  count     INT          NOT NULL DEFAULT 1 COMMENT '累计触发次数',
+  ack_by    VARCHAR(64)  NULL,
+  ack_at    DATETIME     NULL,
+  UNIQUE KEY uk_rule_code (rule_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='告警事件（规则引擎输出）';
