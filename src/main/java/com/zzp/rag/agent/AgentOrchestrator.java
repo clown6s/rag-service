@@ -285,6 +285,17 @@ public class AgentOrchestrator {
     private static final java.util.regex.Pattern NAME_QUOTE = java.util.regex.Pattern.compile(
             "([\\u4e00-\\u9fa5]{2,3})[“\"][^”\"]{2,30}[”\"]");
 
+    /**
+     * 高危跨主题术语锚定表：术语在库内出现，但被模型套用到错误主题时（实例如
+     * "终身监禁"在刑法里只属于贪污/受贿，被套到抢劫上）→ 要求上下文中该术语
+     * 出现位置附近（±150 字窗口）必须出现锚定词，否则视为缺失术语（硬删该句）。
+     * 新增词条：术语 + 其合法语境锚定词。
+     */
+    private static final java.util.Map<String, List<String>> ANCHORED_TERMS = java.util.Map.of(
+            "终身监禁", List.of("贪污", "受贿"));
+
+    private static final int ANCHOR_WINDOW = 150;
+
     /** 数值比对归一化：小写、去空白、全角/半角分隔符统一为 '-'（答案经 fixToken 把 – — 转 ：，资料里是原样） */
     private static String normalizeForCompare(String text) {
         return text.toLowerCase()
@@ -292,10 +303,32 @@ public class AgentOrchestrator {
                 .replaceAll("[：:、～~–—]", "-");
     }
 
+    /**
+     * 高危术语锚定：术语必须出现在上下文中，且至少一处出现的 ±150 字窗口内含锚定词。
+     * 术语根本不在上下文 → false（无依据）；出现但无锚定词 → false（跨主题套用）。
+     */
+    private static boolean termAnchored(String context, String term, List<String> anchors) {
+        int idx = context.indexOf(term);
+        if (idx < 0) {
+            return false;
+        }
+        while (idx >= 0) {
+            int start = Math.max(0, idx - ANCHOR_WINDOW);
+            int end = Math.min(context.length(), idx + term.length() + ANCHOR_WINDOW);
+            String window = context.substring(start, end);
+            if (anchors.stream().anyMatch(window::contains)) {
+                return true;
+            }
+            idx = context.indexOf(term, idx + term.length());
+        }
+        return false;
+    }
+
     /** 延伸服务/自我推销句式（"欢迎告诉我方向""我可为您""请确认是否需要检索"——提示词禁但模型偶犯） */
     private static final java.util.regex.Pattern EXTENSION_OFFER = java.util.regex.Pattern.compile(
             "欢迎随时|欢迎告诉|如需我|需要我帮|我可以为你|我可为您|我可为你|请确认是否"
-                    + "|随时提出|可立即为你|请告诉我您最关注|您希望优先了解");
+                    + "|随时提出|可立即为你|请告诉我您最关注|您希望优先了解"
+                    + "|以下(是|为).{0,12}(摘要|总结)|摘要如下|核心内容如下");
 
     /**
      * 确定性术语核对：提取回答中出现的缩写/带数字术语/中文药物名/数值单位，
@@ -346,6 +379,15 @@ public class AgentOrchestrator {
             String name = qm.group(1);
             if (!ctxLower.contains(name)) {
                 missing.add(name);
+            }
+        }
+        // 5. 高危术语锚定核对：术语在上下文出现的位置附近必须出现锚定词，
+        //    否则视为跨主题套用（"终身监禁"套到抢劫）→ 缺失
+        for (java.util.Map.Entry<String, List<String>> e : ANCHORED_TERMS.entrySet()) {
+            if (answer.contains(e.getKey()) && !termAnchored(context, e.getKey(), e.getValue())) {
+                missing.add(e.getKey());
+                log.info("[Agent] 高危术语锚定失败: {}（语境应含 {}）",
+                        e.getKey(), String.join("/", e.getValue()));
             }
         }
         if (!missing.isEmpty()) {
