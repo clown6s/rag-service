@@ -40,6 +40,11 @@ public final class StreamTokenFixer {
         result = result.replaceAll("(?m)^#{3,}\\s*(.+)$", "**$1**");
         // 2. - / * 无序列表 → 有序列表（规则要求 1. 2. 3.）
         result = convertBulletsToNumbered(result);
+        // 3. 引用块标记（提示词禁了但模型仍输出，行首及句号后的 > 直接剥除）
+        result = result.replaceAll("(?m)^>+\\s*", "");
+        result = result.replaceAll("(?<=[。！？；])>\\s*", "");
+        // 4. 连续冒号塌缩（"：："是模型常见手滑）
+        result = result.replaceAll("：{2,}", "：");
         return result;
     }
 

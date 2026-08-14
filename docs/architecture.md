@@ -54,7 +54,7 @@
 │  ├─ embedding/rerank（本地 BGE）· 评测(Ragas) · 模型服务(vLLM)   │
 │  └─ 未来：DeepDoc OCR/表格/布局 · 语音 · 前沿编排实验             │
 ├──────────────────────────────────────────────────────────────┤
-│ 数据层：Milvus · Neo4j · MinIO · MySQL(业务库,平台化引入) · Redis│
+│ 数据层：Milvus · Neo4j · MinIO · MySQL(业务库,已引入) · Redis│
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -134,7 +134,7 @@ OpenAI 兼容。协议层已统一，网关接入零适配。
 - **网关短板自建**：New-API 提供基础看板；告警（渠道失败率、配额耗尽、降级事件）自建
 - **降级可视化**：Reranker/网关 fallback 发生时必须打 WARN + 指标（当前已有日志，缺指标）
 - **安全整改**：`application.yml` 中 Neo4j 密码硬编码（`application.yml:75`）改为 `${NEO4J_PASSWORD}` 并轮换
-- **落地进度（2026-08-13）**：已实现 traceId 过滤器（`TraceIdFilter`，X-Trace-Id 透传 + MDC）与审计事件落盘（`AuditService` → `logs/audit/audit-YYYY-MM-DD.jsonl`，异步写入不阻塞链路，事件含 query/来源/检索耗时/rerank 降级标记/回答预览）；审计聚合入库、看板、告警待建（阶段 2，需先引入业务库）
+- **落地进度（2026-08-14）**：traceId 过滤器（`TraceIdFilter`）+ 审计 JSONL 落盘（`AuditService`，异步不阻塞链路）+ 聚合入库（`AuditAggregator` 定时幂等 upsert，trace_id 唯一键，MySQL 故障时游标保持自动恢复）+ 看板（`AdminAuditController` stats/events + rag-admin 审计看板页）；告警（渠道失败率、配额耗尽）待建
 - **Agent 可靠性（2026-08-13）**：rerank 双通道落地（ai-sidecar 主通道 + 硅基流动降级，主通道挂掉自动切换）；Agent 确定性兜底——检索被调用且最高相关度低于 `rag.agent.min-relevance-score`（默认 0.3）时，固定输出"根据现有资料，暂无法回答该问题"，不信任 LLM 输出（提示词约束实测不可靠）
 
 ## 5. 单体演进与部署形态
@@ -152,7 +152,7 @@ OpenAI 兼容。协议层已统一，网关接入零适配。
 | 阶段 | 产出 | 扩展性收益 | 状态 |
 |---|---|---|---|
 | 1 | rag-service agent 化（R1 路由 + 状态机 + 工具）+ ai-sidecar | 知识数字员工最小闭环 | ✅ 完成（非流式 + SSE 流式，route/tool 事件透传） |
-| 2 | 审计聚合/用量 + 业务库引入 + 直连 vLLM/DeepSeek；网关按需引入 | 可审计、可切换 | 🚧 审计底座已落地，聚合/看板待建 |
+| 2 | 审计聚合/用量 + 业务库引入 + 直连 vLLM/DeepSeek；网关按需引入 | 可审计、可切换 | ✅ 业务库+聚合入库+看板已落地（数字员工配置存储层同步落地，运行时绑定留阶段 4） |
 | 3 | 技能规范落地（注册中心 + 存量 @Tool 收敛）+ MCP 试点接一个业务系统 | 能力可插拔 | 待启动 |
 | 4 | 数字员工生命周期（配置→发布→运行→治理）+ 管理后台 | 平台化成型 | 待启动 |
 | 5 | 多数字员工协作 + 上下文飞轮（答案回流知识库） | 超级团队 | 待启动 |
@@ -172,7 +172,7 @@ OpenAI 兼容。协议层已统一，网关接入零适配。
 | 组件 | 选型 | 说明 |
 |---|---|---|
 | 知识底座 | Java 21 / LangChain4j 1.17.2 / Milvus 2.5 / Neo4j 5 | 现状，混合检索 + GraphRAG |
-| 业务库 | MySQL + MyBatis-Plus（平台化阶段引入） | 技能/数字员工配置/审计聚合 |
+| 业务库 | MySQL 8.4 + MyBatis-Plus 3.5.12（已引入，软依赖降级） | 技能/数字员工配置/审计聚合 |
 | 模型网关 | New-API（备选 One-API），按需启用 | OpenAI 兼容，内网自建 |
 | 模型服务 | vLLM + Qwen（私有底座 8686） | OpenAI 兼容 API，Java 直连 HTTP |
 | AI 边车 | Python 3.11 / FastAPI / PyMuPDF / sentence-transformers / Ragas | ai-sidecar（独立仓库）：/rerank（双通道降级）、/parse（PDF 解析，DeepDoc 视觉任务待部署） |

@@ -144,6 +144,16 @@ rag:
   audit:
     enabled: true              # 审计事件写入 logs/audit/audit-YYYY-MM-DD.jsonl（异步，不阻塞链路）
     log-dir: logs/audit
+  mysql:
+    enabled: true              # 业务库（软依赖：未部署/故障时问答主链路不受影响，管理 API 降级提示）
+    host: ${MYSQL_HOST:127.0.0.1}
+    port: ${MYSQL_PORT:3306}
+    database: ${MYSQL_DATABASE:rag_service}
+    username: ${MYSQL_USERNAME:rag}
+    # 兼容两种 key 写法（root 直连场景常见 MYSQL_ROOT_PASSWORD）
+    password: ${MYSQL_ROOT_PASSWORD:}
+    audit-aggregate-interval-ms: 10000   # 审计 JSONL → MySQL 聚合周期
+    audit-rescan-days: 3                 # 重启后重扫最近 N 天 JSONL（幂等补漏）
   upload:
     max-file-size: 20MB
     allowed-types: pdf,docx,doc,md,txt,html

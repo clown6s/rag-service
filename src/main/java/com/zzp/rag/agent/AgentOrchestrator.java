@@ -86,9 +86,11 @@ public class AgentOrchestrator {
                     pre.graphContext().length());
         }
         String context = retrievalPipeline.buildContext(pre, 3000);
+        // 图谱-only：文档片段全被阈值过滤、仅图谱非空（授权过宽重灾区，需收紧）
+        boolean graphOnly = pre.segments().isEmpty() && !pre.graphContext().isBlank();
         try {
-            String answer = agentService.chat(conversationId, enrich(query, context));
-            answer = verify(answer, context);
+            String answer = agentService.chat(conversationId, enrich(query, context, graphOnly));
+            answer = verify(answer, context, graphOnly);
             List<String> sources = agentTools.getSources().isEmpty()
                     ? pre.getSources() : agentTools.getSources();
             return new AgentAnswer(answer, sources, route, pre.rerankDegraded(),
@@ -99,8 +101,10 @@ public class AgentOrchestrator {
     }
 
     /** 把确定性检索资料拼进用户消息（Agent 直接基于资料回答，工具仅作补充） */
-    private String enrich(String query, String context) {
-        return query + "\n\n[知识库检索资料]\n" + context + "\n[/知识库检索资料]";
+    private String enrich(String query, String context, boolean graphOnly) {
+        String note = graphOnly ? "\n【注意】文档检索无直接命中，以上仅为知识图谱关联。"
+                + "回答只陈述图谱中的关系本身，不得输出资料外的症状、数值、检查项目、药物、诊断标准或建议。" : "";
+        return query + "\n\n[知识库检索资料]\n" + context + note + "\n[/知识库检索资料]";
     }
 
     // ==================== 答案事实校验（编造最后防线） ====================
@@ -113,6 +117,7 @@ public class AgentOrchestrator {
             【重点】删除模型的元话语/自我说明（如"需进一步检索""我将检索"等推理过程文字），回答只保留结论性内容。
             不得添加任何新内容，不得改变保留句子的原意，保持原有格式。
             直接输出修订后的回答全文，不要任何解释。
+            %s
             %s
 
             [知识库检索资料]
@@ -130,7 +135,7 @@ public class AgentOrchestrator {
      * 后置确定性兜底：校验器软约束失效时（漏删），硬删除仍含缺失术语的句子。
      * 软依赖：校验失败或返回空时按原文下发，不阻断链路。
      */
-    private String verify(String answer, String context) {
+    private String verify(String answer, String context, boolean graphOnly) {
         if (!verifyEnabled || answer == null || answer.isBlank()
                 || context == null || context.isBlank() || NO_ANSWER.equals(answer)) {
             return answer;
@@ -141,7 +146,9 @@ public class AgentOrchestrator {
                     "【已知缺失术语】以下术语在资料中不存在："
                             + String.join("、", missing.stream().limit(12).toList())
                             + "。包含它们的句子必须删除或改写（移除术语本身），不得保留。";
-            String out = contextualModel.chat(VERIFY_PROMPT.formatted(missingBlock, context, answer));
+            String graphOnlyRule = graphOnly ? "【重点】本次检索无文档片段命中，仅提供知识图谱关联。"
+                    + "回答中超出图谱关系本身的内容（症状、数值、检查项目、药物、诊断标准、建议等）全部删除。" : "";
+            String out = contextualModel.chat(VERIFY_PROMPT.formatted(missingBlock, graphOnlyRule, context, answer));
             if (out == null || out.isBlank()) {
                 return answer;
             }
@@ -174,9 +181,10 @@ public class AgentOrchestrator {
         StringBuilder kept = new StringBuilder();
         int removed = 0;
         for (String sentence : text.split("(?<=[。！？；\\n])")) {
+            String normSentence = normalizeForCompare(sentence);
             boolean bad = false;
             for (String t : missingTerms) {
-                if (sentence.toLowerCase().contains(t.toLowerCase())) {
+                if (normSentence.contains(normalizeForCompare(t))) {
                     bad = true;
                     break;
                 }
@@ -192,7 +200,24 @@ public class AgentOrchestrator {
         }
         log.info("[Agent] 确定性删除含缺失术语句子 {} 句（术语: {}）",
                 removed, String.join("、", missingTerms.stream().limit(8).toList()));
-        return kept.isEmpty() ? NO_ANSWER : kept.toString();
+        String result = kept.isEmpty() ? NO_ANSWER : kept.toString();
+        return collapseEmptyHeadings(result);
+    }
+
+    /**
+     * 硬删后清理：内容被删光只剩标题时（"✅ **基础药物治疗**：" 下空无一物），移除空标题行。
+     * 判定：标题行（加粗行或 ✅/📌/⚠️ 开头）之后直到下一个标题或文末全为空白。
+     */
+    private String collapseEmptyHeadings(String text) {
+        if (text == null || text.isBlank() || NO_ANSWER.equals(text)) {
+            return text;
+        }
+        String result = text.replaceAll(
+                "(?m)^[ \\t]*(?:✅|📌|⚠️)?[ \\t]*\\*\\*[^*\\n]{1,40}\\*\\*[ \\t]*[：:]?[ \\t]*\\n"
+                        + "(?=(?:[ \\t]*\\n)*[ \\t]*(?:✅|📌|⚠️|\\*\\*|\\d+[.、]|[一二三四五六七八九十]+[、.]|$))",
+                "");
+        // 压缩连续空行（删除后遗留）
+        return result.replaceAll("\\n{3,}", "\n\n").strip();
     }
 
     /** 回答中的英文缩写/带数字术语（全大写、含数字或词内大小写切换，如 ECMO、SGLT2、HFrEF） */
@@ -203,13 +228,34 @@ public class AgentOrchestrator {
     private static final java.util.regex.Pattern MIXED_CASE =
             java.util.regex.Pattern.compile("[A-Z][a-z]+[A-Z]");
 
+    /** 中文药物名后缀（覆盖常用药物类别：XX昔布/XX洛尔/XX沙坦/XX霉素等；丁胺/那非/坦 覆盖多巴酚丁胺、西地那非、马昔腾坦类） */
+    private static final java.util.regex.Pattern CN_DRUG = java.util.regex.Pattern.compile(
+            "[\\u4e00-\\u9fa5]{1,6}(霉素|昔布|洛尔|普利|沙坦|他汀|地平|西汀|唑|米松|磺吡啶|环素|西林|替尼|单抗|洛芬|尼酮|格列酮|丁胺|那非|坦|卡尼|前列素|双胍)");
+
+    /** 数值+单位模式（"140 mmHg""30分钟""15：35岁""约30%""23°C"等，分隔符归一化后比对资料） */
+    private static final java.util.regex.Pattern NUM_UNIT = java.util.regex.Pattern.compile(
+            "\\d+(?:[.：:、～~\\-]\\d+)?\\s*(?:mmHg|mmol/L|kg/m²|°C|℃|mg|ml|g|kg|cm|分钟|小时|天|周|月|年|岁|%|次|度)");
+
+    /** 人名+引文模式（"李煜"帘卷西风…""——引文在资料里、作者不在的伪造归因） */
+    private static final java.util.regex.Pattern NAME_QUOTE = java.util.regex.Pattern.compile(
+            "([\\u4e00-\\u9fa5]{2,3})[“\"][^”\"]{2,30}[”\"]");
+
+    /** 数值比对归一化：小写、去空白、全角/半角分隔符统一为 '-'（答案经 fixToken 把 – — 转 ：，资料里是原样） */
+    private static String normalizeForCompare(String text) {
+        return text.toLowerCase()
+                .replaceAll("\\s+", "")
+                .replaceAll("[：:、～~–—]", "-");
+    }
+
     /**
-     * 确定性术语核对：提取回答中出现的缩写/带数字术语（ECMO、SGLT2、HFrEF 类），
+     * 确定性术语核对：提取回答中出现的缩写/带数字术语/中文药物名/数值单位，
      * 凡资料中未逐字出现的列入缺失清单（校验器注入 + 硬删除的依据）。
      */
     private List<String> findMissingTerms(String answer, String context) {
         String ctxLower = context.toLowerCase();
+        String normCtx = normalizeForCompare(context);
         java.util.LinkedHashSet<String> missing = new java.util.LinkedHashSet<>();
+        // 1. ASCII 缩写/带数字术语
         java.util.regex.Matcher m = ASCII_TERM.matcher(answer);
         while (m.find()) {
             String t = m.group();
@@ -221,6 +267,31 @@ public class AgentOrchestrator {
                     || MIXED_CASE.matcher(t).find();
             if (risky && !ctxLower.contains(t.toLowerCase())) {
                 missing.add(t);
+            }
+        }
+        // 2. 中文药物名（后缀词表）
+        java.util.regex.Matcher dm = CN_DRUG.matcher(answer);
+        while (dm.find()) {
+            String t = dm.group();
+            if (!ctxLower.contains(t)) {
+                missing.add(t);
+            }
+        }
+        // 3. 数值+单位（分隔符归一化后比对，兼容"15：35岁"vs"15-35岁"）
+        java.util.regex.Matcher nm = NUM_UNIT.matcher(answer);
+        while (nm.find()) {
+            String t = nm.group();
+            String norm = normalizeForCompare(t);
+            if (!normCtx.contains(norm)) {
+                missing.add(norm);
+            }
+        }
+        // 4. 人名+引文：引文本身可能在资料中，作者名不在 → 伪造归因（李煜/李清照类错误）
+        java.util.regex.Matcher qm = NAME_QUOTE.matcher(answer);
+        while (qm.find()) {
+            String name = qm.group(1);
+            if (!ctxLower.contains(name)) {
+                missing.add(name);
             }
         }
         if (!missing.isEmpty()) {
@@ -276,7 +347,8 @@ public class AgentOrchestrator {
             return;
         }
         String context = retrievalPipeline.buildContext(pre, 3000);
-        String enriched = enrich(query, context);
+        boolean graphOnly = pre.segments().isEmpty() && !pre.graphContext().isBlank();
+        String enriched = enrich(query, context, graphOnly);
 
         // 工具执行回调与工具执行同线程，此处读取 ThreadLocal 状态并快照，
         // 供 onCompleteResponse（可能在其他线程）使用
@@ -295,7 +367,7 @@ public class AgentOrchestrator {
                 .onCompleteResponse(resp -> {
                     try {
                         // fixFull 与固定流水线/非流式端点保持一致（### 子标题 → 加粗、- 列表 → 有序）
-                        emitChunks(StreamTokenFixer.fixFull(verify(full.toString(), context)), handler);
+                        emitChunks(StreamTokenFixer.fixFull(verify(full.toString(), context, graphOnly)), handler);
                         handler.onComplete(route, sourcesHolder[0], degradedHolder[0],
                                 pre.graphContext().length());
                     } finally {
@@ -317,7 +389,7 @@ public class AgentOrchestrator {
     private static final String ROUTER_PROMPT = """
             你是意图路由分类器。判断用户输入属于哪一类，只输出一个词，不要输出任何其他内容：
             - KNOWLEDGE_QA：知识性提问，需要检索资料库或知识图谱才能回答
-            - CHAT：闲聊、寒暄、询问你的能力、简单确认、打招呼
+            - CHAT：闲聊、寒暄、询问你的能力、简单确认、打招呼、询问天气/时间等实时信息（资料库无法回答）
 
             用户输入：
             """;
@@ -341,6 +413,7 @@ public class AgentOrchestrator {
 
     private static final String CHAT_PROMPT = """
             你是一个友好的AI客服助手，请简洁自然地回应用户的闲聊、寒暄或关于你能力的问题。
+            你没有实时数据（天气、股价、时间等），涉及此类问题时如实说明无法获取，不得编造具体数值。
 
             用户：%s
             """;
