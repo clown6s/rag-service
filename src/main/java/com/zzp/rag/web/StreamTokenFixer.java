@@ -134,7 +134,8 @@ public final class StreamTokenFixer {
         // 双重编号：模型把条文枚举"（一）"套在自编号里（"1. （一）入户抢劫"）→ 剥中文数字
         java.util.regex.Pattern dup = java.util.regex.Pattern.compile(
                 "^(\\d+)\\.\\s*（[一二三四五六七八九十]+）\\s*(.*)$");
-        int counter = 0;
+        // 按缩进层级分别计数：嵌套列表（外层 1. → 子层 1./2. → 回外层应为 2.）
+        java.util.Map<String, Integer> counters = new java.util.HashMap<>();
         String lastIndent = null;
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
@@ -142,30 +143,28 @@ public final class StreamTokenFixer {
             String indent = line.substring(0, line.length() - stripped.length());
             java.util.regex.Matcher dm = dup.matcher(stripped);
             if (dm.matches()) {
-                if (lastIndent != null && !indent.equals(lastIndent)) {
-                    counter = 0;   // 缩进变化 = 新一层列表（"包括："后的子枚举从 1 重排）
-                }
-                counter++;
+                int c = counters.getOrDefault(indent, 0) + 1;
+                counters.put(indent, c);
+                counters.keySet().removeIf(k -> k.length() > indent.length());   // 更深层计数失效
                 lastIndent = indent;
-                lines[i] = indent + counter + ". " + dm.group(2);
+                lines[i] = indent + c + ". " + dm.group(2);
                 continue;
             }
             java.util.regex.Matcher m = num.matcher(stripped);
             if (m.matches()) {
-                if (lastIndent != null && !indent.equals(lastIndent)) {
-                    counter = 0;
-                }
-                counter++;
+                int c = counters.getOrDefault(indent, 0) + 1;
+                counters.put(indent, c);
+                counters.keySet().removeIf(k -> k.length() > indent.length());
                 lastIndent = indent;
-                lines[i] = indent + counter + ". " + m.group(2);
+                lines[i] = indent + c + ". " + m.group(2);
             } else if (stripped.isEmpty()) {
-                counter = 0;          // 空行 = 段间分隔，重置
+                counters.clear();     // 空行 = 段间分隔，重置
                 lastIndent = null;
             } else if (lastIndent == null || indent.length() > lastIndent.length()) {
                 // 更深缩进的非编号行 = 上一列表项的续行（条目内容折行），不打断编号
                 // （如 "1. 民法责任：\n  ...续行段落...\n1. 转化型抢劫" 的第二个 1. 应改为 2.）
             } else {
-                counter = 0;          // 同级/更浅的非编号行 = 新的正文段落，重置
+                counters.clear();     // 同级/更浅的非编号行 = 新的正文段落，重置
                 lastIndent = null;
             }
         }
