@@ -155,6 +155,25 @@ rag:
   audit:
     enabled: true              # 审计事件写入 logs/audit/audit-YYYY-MM-DD.jsonl（异步，不阻塞链路）
     log-dir: logs/audit
+  alert:
+    interval-ms: 60000               # 规则引擎评估周期
+    window-minutes: 5                # 窗口统计长度
+    error-rate-threshold: 0.3        # 错误率阈值（2 倍升级 CRITICAL）
+    error-rate-min-samples: 10       # 错误率规则最小样本数（防小样本误报）
+    slow-ms: 30000                   # 平均耗时告警阈值
+    slow-min-samples: 5
+    consecutive-failures: 5          # 连续失败条数
+    feishu:
+      webhook-url: ""                # 飞书群机器人 webhook（配置才启用推送；软依赖）
+      webhook-sign-secret: ""        # 群机器人签名密钥（可选）
+  feishu:
+    enabled: false                          # 飞书接入总开关（软依赖：默认关闭，平台不依赖任何 IM）
+    base-url: ${FEISHU_BASE_URL:https://open.feishu.cn}  # 开放平台域名（私有化改自有域名，代码零改动）
+    app-id: ${FEISHU_APP_ID:}
+    app-secret: ${FEISHU_APP_SECRET:}
+    verification-token: ${FEISHU_VERIFICATION_TOKEN:}    # 事件订阅验签 token（回调模式用；长连接模式忽略）
+    default-agent-id: 0                     # 绑定数字员工 id（0=平台默认员工）
+    long-connection: true                   # 长连接模式（出站 WS 收事件，内网友好）；false=HTTP 回调模式
   mysql:
     enabled: true              # 业务库（软依赖：未部署/故障时问答主链路不受影响，管理 API 降级提示）
     host: ${MYSQL_HOST:127.0.0.1}

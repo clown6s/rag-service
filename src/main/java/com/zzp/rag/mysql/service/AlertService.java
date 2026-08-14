@@ -42,16 +42,18 @@ public class AlertService {
 
     public record AlertStats(int unresolved, int acknowledged, int today) {}
 
+    /** fire 结果：CREATED/REOPENED 值得外部通知（推送），REFRESHED 只是原地续期（防通知风暴） */
+    public enum FireOutcome { CREATED, REOPENED, REFRESHED, FAILED }
+
     /**
      * 触发告警（幂等 upsert）：
-     * - 无记录 → 新建 OPEN
-     * - OPEN/ACKNOWLEDGED → 原地刷新 last_at/count/level/detail（不重复刷行）
-     * - RESOLVED → 重开：status 回 OPEN、count 重置、first_at 更新
-     * @return 当前行 id（0 = 降级未写）
+     * - 无记录 → 新建 OPEN（CREATED）
+     * - OPEN/ACKNOWLEDGED → 原地刷新 last_at/count/level/detail（REFRESHED，不重复刷行）
+     * - RESOLVED → 重开：status 回 OPEN、count 重置、first_at 更新（REOPENED）
      */
-    public long fire(String ruleCode, String level, String title, String detail) {
+    public FireOutcome fire(String ruleCode, String level, String title, String detail) {
         if (!status.isAvailable()) {
-            return 0;
+            return FireOutcome.FAILED;
         }
         try {
             LocalDateTime now = LocalDateTime.now();
@@ -69,7 +71,7 @@ public class AlertService {
                 e.setCount(1);
                 mapper.insert(e);
                 log.warn("[告警] 新增 {} level={} title={}", ruleCode, level, title);
-                return e.getId();
+                return FireOutcome.CREATED;
             }
             if (STATUS_RESOLVED.equals(existing.getStatus())) {
                 // 恢复后复发：重开告警
@@ -83,25 +85,26 @@ public class AlertService {
                 existing.setAckAt(null);
                 mapper.updateById(existing);
                 log.warn("[告警] 复发重开 {} level={}", ruleCode, level);
-                return existing.getId();
+                return FireOutcome.REOPENED;
             }
             existing.setLevel(level);
             existing.setDetail(detail);
             existing.setLastAt(now);
             existing.setCount((existing.getCount() == null ? 0 : existing.getCount()) + 1);
             mapper.updateById(existing);
-            return existing.getId();
+            return FireOutcome.REFRESHED;
         } catch (Exception e) {
             status.markUnavailable(e.getMessage());
             log.warn("[告警] 写入失败，降级: {}", e.getMessage());
-            return 0;
+            return FireOutcome.FAILED;
         }
     }
 
-    /** 条件清除：未解决 → RESOLVED（保留次数与最后触发时间作现场） */
-    public void resolve(String ruleCode) {
+    /** 条件清除：未解决 → RESOLVED（保留次数与最后触发时间作现场）
+     *  @return true = 本次发生了 未解决→已恢复 的转换（调用方可据此推送恢复通知） */
+    public boolean resolve(String ruleCode) {
         if (!status.isAvailable()) {
-            return;
+            return false;
         }
         try {
             AlertEventEntity existing = mapper.selectOne(
@@ -110,10 +113,13 @@ public class AlertService {
                 existing.setStatus(STATUS_RESOLVED);
                 mapper.updateById(existing);
                 log.info("[告警] 恢复 resolved={}", ruleCode);
+                return true;
             }
+            return false;
         } catch (Exception e) {
             status.markUnavailable(e.getMessage());
             log.warn("[告警] 恢复写入失败: {}", e.getMessage());
+            return false;
         }
     }
 

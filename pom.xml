@@ -22,6 +22,7 @@
         <langchain4j.version>1.17.2</langchain4j.version>
         <langchain4j-beta.version>1.17.2-beta27</langchain4j-beta.version>
         <milvus-sdk.version>2.5.8</milvus-sdk.version>
+        <lark-oapi.version>2.8.5</lark-oapi.version>
         <tika.version>3.1.0</tika.version>
         <mybatis-plus.version>3.5.12</mybatis-plus.version>
     </properties>
@@ -99,6 +100,12 @@
             <groupId>io.milvus</groupId>
             <artifactId>milvus-sdk-java</artifactId>
             <version>${milvus-sdk.version}</version>
+        </dependency>
+        <!-- 飞书长连接（官方 Java SDK：WS 收事件 + protobuf 帧 + 重连），SaaS/私有化同构 -->
+        <dependency>
+            <groupId>com.larksuite.oapi</groupId>
+            <artifactId>oapi-sdk</artifactId>
+            <version>${lark-oapi.version}</version>
         </dependency>
 
         <!-- 文档解析 -->

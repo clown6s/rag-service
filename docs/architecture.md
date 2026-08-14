@@ -110,6 +110,15 @@ OpenAI 兼容。协议层已统一，网关接入零适配。
 - **客户端**：官方 Java MCP SDK（io.modelcontextprotocol 0.10.0）+ 自研 ToolProvider 桥接
   （langchain4j-mcp 模块未离线可用；桥接 ≈100 行：listTools→ToolSpecification、callTool→ToolExecutor）
 
+### 3.5 渠道接入（IM 适配器，2026-08-15）
+
+数字员工的接入端不止 Web 管理台——企业 IM（飞书/钉钉/企微）是主使用形态：
+
+- **渠道适配器模式**：统一处理核心（`FeishuChatBridge`：消息 → agentId 映射 → 数字员工对话 → 回复 + 审计 endpoint=feishu/chat），每家 IM 只写一个薄适配器（~300 行），核心零改动
+- **飞书（已落地）**：长连接模式（官方 Java SDK oapi-sdk 2.8.5，出站 WS 收事件，内网无需公网回调）+ HTTP 回调模式兜底；SaaS/私有化同构，只换 baseUrl
+- **告警推送（已落地）**：规则触发/恢复 → 群机器人 webhook 卡片（红/橙/绿三态，HMAC 签名可选，未配置静默跳过）
+- 钉钉/企微：回调为 AES 加密，接入时各自实现解密适配器，其余复用
+
 ### 3.4 编排三层（流程的扩展点）
 
 编排在 Java（判据：工具在哪，编排就在哪）。三层按场景复杂度选择，共享同一套技能/工具注册表：

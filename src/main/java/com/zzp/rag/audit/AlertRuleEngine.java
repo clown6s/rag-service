@@ -36,6 +36,7 @@ public class AlertRuleEngine {
 
     private final AuditEventMapper auditMapper;
     private final AlertService alertService;
+    private final FeishuAlertNotifier notifier;
     private final MysqlStatus mysqlStatus;
 
     @Value("${rag.alert.window-minutes:5}")
@@ -57,9 +58,11 @@ public class AlertRuleEngine {
     private int consecutiveFailures;
 
     public AlertRuleEngine(AuditEventMapper auditMapper,
-                           AlertService alertService, MysqlStatus mysqlStatus) {
+                           AlertService alertService, FeishuAlertNotifier notifier,
+                           MysqlStatus mysqlStatus) {
         this.auditMapper = auditMapper;
         this.alertService = alertService;
+        this.notifier = notifier;
         this.mysqlStatus = mysqlStatus;
     }
 
@@ -82,13 +85,14 @@ public class AlertRuleEngine {
         if (mysqlDownSince != null) {
             LocalDateTime downSince = mysqlDownSince;
             mysqlDownSince = null;
-            // 恢复：补写一条告警历史（fire 后立即 resolve，保留现场供排查）
+            long downSeconds = java.time.Duration.between(downSince, LocalDateTime.now()).toSeconds();
+            // 恢复：补写一条告警历史（fire 后立即 resolve，保留现场供排查）+ 推送恢复通知
+            String detail = "中断开始: " + downSince + "，中断时长 " + downSeconds + " 秒";
             alertService.fire(RULE_MYSQL_DOWN, "CRITICAL",
-                    "业务库连接中断后已恢复",
-                    "中断开始: " + downSince + "，恢复: " + LocalDateTime.now());
+                    "业务库连接中断后已恢复", detail);
             alertService.resolve(RULE_MYSQL_DOWN);
-            log.warn("[告警] 业务库已恢复，中断时长 {} 秒",
-                    java.time.Duration.between(downSince, LocalDateTime.now()).toSeconds());
+            notifier.pushAlert(RULE_MYSQL_DOWN, "CRITICAL", "业务库连接中断后已恢复", detail);
+            log.warn("[告警] 业务库已恢复，中断时长 {} 秒", downSeconds);
         }
 
         try {
@@ -101,25 +105,40 @@ public class AlertRuleEngine {
         }
     }
 
+    /** fire + 通知：仅在新建/复发时推送（REFRESHED 原地续期不推，防风暴） */
+    private void fireWithNotify(String ruleCode, String level, String title, String detail) {
+        AlertService.FireOutcome outcome = alertService.fire(ruleCode, level, title, detail);
+        if (outcome == AlertService.FireOutcome.CREATED || outcome == AlertService.FireOutcome.REOPENED) {
+            notifier.pushAlert(ruleCode, level, title, detail);
+        }
+    }
+
+    /** resolve + 通知：仅在本次实际发生 未解决→已恢复 转换时推送 */
+    private void resolveWithNotify(String ruleCode, String title) {
+        if (alertService.resolve(ruleCode)) {
+            notifier.pushRecovered(ruleCode, title);
+        }
+    }
+
     /** 规则 1：窗口错误率 */
     private void evaluateErrorRate() {
         LocalDateTime since = LocalDateTime.now().minusMinutes(windowMinutes);
         QueryWrapper<AuditEventEntity> qw = new QueryWrapper<AuditEventEntity>().ge("created_at", since);
         long total = auditMapper.selectCount(qw);
         if (total < errorRateMinSamples) {
-            alertService.resolve(RULE_ERROR_RATE);
+            resolveWithNotify(RULE_ERROR_RATE, "请求错误率过高");
             return;
         }
         long errors = auditMapper.windowErrorCount(since);
         double rate = (double) errors / total;
         if (rate >= errorRateThreshold) {
             String level = rate >= errorRateThreshold * 2 ? "CRITICAL" : "WARNING";
-            alertService.fire(RULE_ERROR_RATE, level,
+            fireWithNotify(RULE_ERROR_RATE, level,
                     "请求错误率过高",
                     String.format("近 %d 分钟 %d 次请求中 %d 次失败（%.1f%% ≥ %.1f%%）",
                             windowMinutes, total, errors, rate * 100, errorRateThreshold * 100));
         } else {
-            alertService.resolve(RULE_ERROR_RATE);
+            resolveWithNotify(RULE_ERROR_RATE, "请求错误率过高");
         }
     }
 
@@ -132,12 +151,12 @@ public class AlertRuleEngine {
                 && last.stream().allMatch(e -> !"SUCCESS".equals(e.getStatus()));
         if (allFailed) {
             String recent = last.get(0).getError() != null ? last.get(0).getError() : "未知原因";
-            alertService.fire(RULE_CONSECUTIVE_FAILURES, "CRITICAL",
+            fireWithNotify(RULE_CONSECUTIVE_FAILURES, "CRITICAL",
                     "连续请求失败",
                     String.format("最近 %d 条请求全部失败（最新错误: %s）",
                             consecutiveFailures, truncate(recent, 200)));
         } else {
-            alertService.resolve(RULE_CONSECUTIVE_FAILURES);
+            resolveWithNotify(RULE_CONSECUTIVE_FAILURES, "连续请求失败");
         }
     }
 
@@ -147,17 +166,17 @@ public class AlertRuleEngine {
         long total = auditMapper.selectCount(
                 new QueryWrapper<AuditEventEntity>().ge("created_at", since));
         if (total < slowMinSamples) {
-            alertService.resolve(RULE_SLOW_RESPONSE);
+            resolveWithNotify(RULE_SLOW_RESPONSE, "响应耗时过高");
             return;
         }
         Double avg = auditMapper.windowAvgMs(since);
         if (avg != null && avg >= slowMs) {
-            alertService.fire(RULE_SLOW_RESPONSE, "WARNING",
+            fireWithNotify(RULE_SLOW_RESPONSE, "WARNING",
                     "响应耗时过高",
                     String.format("近 %d 分钟 %d 次请求平均耗时 %.0f ms（≥ %d ms）",
                             windowMinutes, total, avg, slowMs));
         } else {
-            alertService.resolve(RULE_SLOW_RESPONSE);
+            resolveWithNotify(RULE_SLOW_RESPONSE, "响应耗时过高");
         }
     }
 
