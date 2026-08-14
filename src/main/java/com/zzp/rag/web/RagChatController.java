@@ -86,7 +86,7 @@ public class RagChatController {
         RetrievalPipeline.PipelineResult result = null;
         try {
             String searchQuery = buildSearchQuery(req.query(), req.history());
-            result = retrievalPipeline.execute(searchQuery, null);
+            result = retrievalPipeline.execute(searchQuery, null, true);
             String context = retrievalPipeline.buildContext(result, 3000);
 
             String prompt = buildPrompt(context, req.query(), req.history());
@@ -121,7 +121,7 @@ public class RagChatController {
             try {
                 // 1. 检索（多轮：拼接上文）
                 String searchQuery = buildSearchQuery(req.query(), req.history());
-                var result = retrievalPipeline.execute(searchQuery, null);
+                var result = retrievalPipeline.execute(searchQuery, null, true);
                 String context = retrievalPipeline.buildContext(result, 3000);
 
                 // 2. 流式生成（带历史上下文），累积完整答案用于解析引用

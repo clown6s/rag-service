@@ -30,7 +30,7 @@ public class SearchController {
 
     @PostMapping("/search")
     public ApiResponse<SearchResponse> search(@Valid @RequestBody SearchRequest req) {
-        var result = retrievalPipeline.execute(req.query(), null);
+        var result = retrievalPipeline.execute(req.query(), null, true);
         List<SearchHit> hits = result.segments().stream()
                 .map(seg -> {
                     Object score = seg.metadata().toMap().get("rerank_score");

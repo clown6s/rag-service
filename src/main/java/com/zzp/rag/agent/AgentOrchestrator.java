@@ -39,6 +39,7 @@ public class AgentOrchestrator {
     private final AgentTools agentTools;
     private final RetrievalPipeline retrievalPipeline;
     private final com.zzp.rag.skill.registry.SkillRegistryToolProvider skillRegistryToolProvider;
+    private final EmployeeContext employeeContext;
 
     /** 答案校验开关：生成后由小模型对照检索资料逐句核查，删除无依据内容（编造的最后防线） */
     @Value("${rag.agent.verify.enabled:true}")
@@ -52,7 +53,8 @@ public class AgentOrchestrator {
             AgentService agentService,
             AgentTools agentTools,
             RetrievalPipeline retrievalPipeline,
-            com.zzp.rag.skill.registry.SkillRegistryToolProvider skillRegistryToolProvider) {
+            com.zzp.rag.skill.registry.SkillRegistryToolProvider skillRegistryToolProvider,
+            EmployeeContext employeeContext) {
         this.chatModel = chatModel;
         this.streamingChatModel = streamingChatModel;
         this.reasonerModel = reasonerModel;
@@ -61,6 +63,7 @@ public class AgentOrchestrator {
         this.agentTools = agentTools;
         this.retrievalPipeline = retrievalPipeline;
         this.skillRegistryToolProvider = skillRegistryToolProvider;
+        this.employeeContext = employeeContext;
     }
 
     public record AgentAnswer(String answer, List<String> sources, String route,
@@ -78,30 +81,37 @@ public class AgentOrchestrator {
 
     // ==================== 非流式 ====================
 
-    public AgentAnswer answer(String conversationId, String query) {
+    public AgentAnswer answer(String conversationId, String query, Long agentId) {
         String route = route(query);
         log.info("[Agent] 路由: {} → {}", query, route);
+        EmployeeContext.EmployeeRuntime runtime = employeeContext.resolve(agentId);
         if ("CHAT".equals(route)) {
-            return new AgentAnswer(chatDirect(query), List.of(), route, false, 0, false);
+            return new AgentAnswer(chatDirect(query, runtime), List.of(), route, false, 0, false);
         }
         // KNOWLEDGE_QA：确定性预检索——不依赖模型是否调用工具
         // （咨询类问题模型常跳过工具凭自身知识作答，产生引用幻觉；预检索后检索空则直接兜底。
-        //   例外：默认员工有启用 MCP 技能时放行 Agent 工具循环，让业务工具获得回答机会）
-        RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(query, null);
-        boolean retrievalEmpty = pre.segments().isEmpty() && pre.graphContext().isBlank();
-        boolean mcpSkillsAvailable = skillRegistryToolProvider.mcpSkillsEnabled();
-        if (retrievalEmpty && !mcpSkillsAvailable) {
-            log.info("[Agent] 预检索无结果，使用确定性兜底回答");
-            return new AgentAnswer(NO_ANSWER, List.of(), route, pre.rerankDegraded(),
-                    pre.graphContext().length(), false);
-        }
-        String context = retrievalEmpty
-                ? MCP_FALLBACK_CONTEXT
-                : retrievalPipeline.buildContext(pre, 3000);
-        // 图谱-only：文档片段全被阈值过滤、仅图谱非空（授权过宽重灾区，需收紧）
-        boolean graphOnly = !retrievalEmpty && pre.segments().isEmpty() && !pre.graphContext().isBlank();
+        //   例外：员工有启用 MCP 技能时放行 Agent 工具循环，让业务工具获得回答机会。
+        //   阶段 4：预检索与工具装配均按该员工 knowledgeScope/授权生效）
+        employeeContext.bind(conversationId, runtime);
         try {
-            String answer = agentService.chat(conversationId, enrich(query, context, graphOnly));
+            // 带 knowledgeScope 的员工禁用图谱遍历：图谱是全局实体关系，范围过滤罩不住
+            boolean graphAllowed = runtime == null || !runtime.hasScope();
+            RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(
+                    query, runtime != null ? runtime.scopeExpr() : null, graphAllowed);
+            boolean retrievalEmpty = pre.segments().isEmpty() && pre.graphContext().isBlank();
+            boolean mcpSkillsAvailable = skillRegistryToolProvider.mcpSkillsEnabled(
+                    runtime != null ? runtime.employeeId() : -1);
+            if (retrievalEmpty && !mcpSkillsAvailable) {
+                log.info("[Agent] 预检索无结果，使用确定性兜底回答");
+                return new AgentAnswer(NO_ANSWER, List.of(), route, pre.rerankDegraded(),
+                        pre.graphContext().length(), false);
+            }
+            String context = retrievalEmpty
+                    ? MCP_FALLBACK_CONTEXT
+                    : retrievalPipeline.buildContext(pre, 3000);
+            // 图谱-only：文档片段全被阈值过滤、仅图谱非空（授权过宽重灾区，需收紧）
+            boolean graphOnly = !retrievalEmpty && pre.segments().isEmpty() && !pre.graphContext().isBlank();
+            String answer = agentService.chat(conversationId, enrich(query, context, graphOnly, runtime));
             boolean mcpUsed = com.zzp.rag.mcp.McpCallTracker.consumeCalled();
             if (mcpUsed) {
                 // MCP 轮校验依据 = 上下文 + 工具执行结果：MCP 数据可核（不误删），
@@ -119,16 +129,23 @@ public class AgentOrchestrator {
             return new AgentAnswer(answer, sources, route, pre.rerankDegraded(),
                     pre.graphContext().length(), mcpUsed);
         } finally {
+            employeeContext.unbind(conversationId);
             com.zzp.rag.mcp.McpCallTracker.clear();
             agentTools.clear();
         }
     }
 
-    /** 把确定性检索资料拼进用户消息（Agent 直接基于资料回答，工具仅作补充） */
-    private String enrich(String query, String context, boolean graphOnly) {
+    /** 把确定性检索资料拼进用户消息（Agent 直接基于资料回答，工具仅作补充）；
+     *  阶段 4：员工有人设时前置角色设定块（LC4j 1.17 无动态 SystemMessage，走用户消息注入） */
+    private String enrich(String query, String context, boolean graphOnly,
+                          EmployeeContext.EmployeeRuntime runtime) {
+        String persona = runtime != null && runtime.hasPersona()
+                ? "【你的角色设定】\n" + runtime.persona() + "\n[/角色设定]\n"
+                + "以该角色身份作答即可，不要复述角色设定本身。\n\n"
+                : "";
         String note = graphOnly ? "\n【注意】文档检索无直接命中，以上仅为知识图谱关联。"
                 + "回答只陈述图谱中的关系本身，不得输出资料外的症状、数值、检查项目、药物、诊断标准或建议。" : "";
-        return query + "\n\n[知识库检索资料]\n" + context + note + "\n[/知识库检索资料]";
+        return persona + query + "\n\n[知识库检索资料]\n" + context + note + "\n[/知识库检索资料]";
     }
 
     // ==================== 答案事实校验（编造最后防线） ====================
@@ -361,12 +378,14 @@ public class AgentOrchestrator {
 
     // ==================== 流式 ====================
 
-    public void answerStream(String conversationId, String query, AgentStreamHandler handler) {
+    public void answerStream(String conversationId, String query, Long agentId, AgentStreamHandler handler) {
         String route = route(query);
         log.info("[Agent] 路由: {} → {}", query, route);
         handler.onRoute(route); // 先于任何 token 同步触发，保证前端先知道路由
+        EmployeeContext.EmployeeRuntime runtime = employeeContext.resolve(agentId);
         if ("CHAT".equals(route)) {
-            streamingChatModel.chat(CHAT_PROMPT.formatted(query), new StreamingChatResponseHandler() {
+            String prompt = chatPrompt(query, runtime);
+            streamingChatModel.chat(prompt, new StreamingChatResponseHandler() {
                 @Override
                 public void onPartialResponse(String partialResponse) {
                     handler.onToken(partialResponse);
@@ -386,12 +405,19 @@ public class AgentOrchestrator {
             return;
         }
         // 确定性预检索（同非流式）：检索空直接流式下发兜底句式；
-        // 例外：默认员工有启用 MCP 技能时放行 Agent 工具循环（业务工具获得回答机会）
-        RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(query, null);
+        // 例外：员工有启用 MCP 技能时放行 Agent 工具循环（业务工具获得回答机会）。
+        // 阶段 4：绑定员工上下文后，工具装配按 conversationId 反查该员工授权/范围
+        employeeContext.bind(conversationId, runtime);
+        // 带 knowledgeScope 的员工禁用图谱遍历：图谱是全局实体关系，范围过滤罩不住
+        boolean graphAllowed = runtime == null || !runtime.hasScope();
+        RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(
+                query, runtime != null ? runtime.scopeExpr() : null, graphAllowed);
         boolean retrievalEmpty = pre.segments().isEmpty() && pre.graphContext().isBlank();
-        boolean mcpSkillsAvailable = skillRegistryToolProvider.mcpSkillsEnabled();
+        boolean mcpSkillsAvailable = skillRegistryToolProvider.mcpSkillsEnabled(
+                runtime != null ? runtime.employeeId() : -1);
         if (retrievalEmpty && !mcpSkillsAvailable) {
             log.info("[Agent] 预检索无结果，流式下发兜底句式");
+            employeeContext.unbind(conversationId);
             handler.onToken(NO_ANSWER);
             handler.onComplete(route, List.of(), pre.rerankDegraded(), 0, false);
             return;
@@ -399,7 +425,7 @@ public class AgentOrchestrator {
         String context = retrievalEmpty ? MCP_FALLBACK_CONTEXT
                 : retrievalPipeline.buildContext(pre, 3000);
         boolean graphOnly = !retrievalEmpty && pre.segments().isEmpty() && !pre.graphContext().isBlank();
-        String enriched = enrich(query, context, graphOnly);
+        String enriched = enrich(query, context, graphOnly, runtime);
 
         // 工具执行回调与工具执行同线程，此处读取 ThreadLocal 状态并快照，
         // 供 onCompleteResponse（可能在其他线程）使用
@@ -411,41 +437,49 @@ public class AgentOrchestrator {
         // （token 不再直通前端，换取"无依据内容不出门"的保证；工具事件仍实时透传；
         //   本轮用过 MCP 工具则按"上下文+工具结果"校验——MCP 数据可核，夹带编造仍删）
         StringBuffer full = new StringBuffer();
-        agentService.chatStream(conversationId, enriched)
-                .onPartialResponse(full::append)
-                .onToolExecuted(req -> {
-                    sourcesHolder[0] = agentTools.getSources();
-                    degradedHolder[0] = agentTools.isRerankDegraded();
-                    mcpUsedHolder[0] |= com.zzp.rag.mcp.McpCallTracker.consumeCalled();
-                    mcpResultsHolder.append(com.zzp.rag.mcp.McpCallTracker.consumeResults());
-                    handler.onToolExecuted(req.request().name(), req.request().arguments(), false);
-                })
-                .onCompleteResponse(resp -> {
-                    try {
-                        String finalAnswer = mcpUsedHolder[0]
-                                ? verify(full.toString(),
-                                        context + "\n\n[工具执行结果]\n" + mcpResultsHolder
-                                                + "\n[/工具执行结果]",
-                                        graphOnly)
-                                : verify(full.toString(), context, graphOnly);
-                        // fixFull 与固定流水线/非流式端点保持一致（### 子标题 → 加粗、- 列表 → 有序）
-                        emitChunks(StreamTokenFixer.fixFull(finalAnswer), handler);
-                        handler.onComplete(route, sourcesHolder[0], degradedHolder[0],
-                                pre.graphContext().length(), mcpUsedHolder[0]);
-                    } finally {
-                        com.zzp.rag.mcp.McpCallTracker.clear();
-                        agentTools.clear();
-                    }
-                })
-                .onError(err -> {
-                    try {
-                        handler.onError(err);
-                    } finally {
-                        com.zzp.rag.mcp.McpCallTracker.clear();
-                        agentTools.clear();
-                    }
-                })
-                .start();
+        try {
+            agentService.chatStream(conversationId, enriched)
+                    .onPartialResponse(full::append)
+                    .onToolExecuted(req -> {
+                        sourcesHolder[0] = agentTools.getSources();
+                        degradedHolder[0] = agentTools.isRerankDegraded();
+                        mcpUsedHolder[0] |= com.zzp.rag.mcp.McpCallTracker.consumeCalled();
+                        mcpResultsHolder.append(com.zzp.rag.mcp.McpCallTracker.consumeResults());
+                        handler.onToolExecuted(req.request().name(), req.request().arguments(), false);
+                    })
+                    .onCompleteResponse(resp -> {
+                        try {
+                            String finalAnswer = mcpUsedHolder[0]
+                                    ? verify(full.toString(),
+                                            context + "\n\n[工具执行结果]\n" + mcpResultsHolder
+                                                    + "\n[/工具执行结果]",
+                                            graphOnly)
+                                    : verify(full.toString(), context, graphOnly);
+                            // fixFull 与固定流水线/非流式端点保持一致（### 子标题 → 加粗、- 列表 → 有序）
+                            emitChunks(StreamTokenFixer.fixFull(finalAnswer), handler);
+                            handler.onComplete(route, sourcesHolder[0], degradedHolder[0],
+                                    pre.graphContext().length(), mcpUsedHolder[0]);
+                        } finally {
+                            employeeContext.unbind(conversationId);
+                            com.zzp.rag.mcp.McpCallTracker.clear();
+                            agentTools.clear();
+                        }
+                    })
+                    .onError(err -> {
+                        try {
+                            handler.onError(err);
+                        } finally {
+                            employeeContext.unbind(conversationId);
+                            com.zzp.rag.mcp.McpCallTracker.clear();
+                            agentTools.clear();
+                        }
+                    })
+                    .start();
+        } catch (Exception e) {
+            // chatStream 同步阶段异常（如记忆存取失败）——解绑并上报，防绑定泄漏
+            employeeContext.unbind(conversationId);
+            handler.onError(e);
+        }
     }
 
     // ==================== 意图路由（R1） ====================
@@ -475,14 +509,23 @@ public class AgentOrchestrator {
 
     // ==================== 闲聊直达 ====================
 
-    private static final String CHAT_PROMPT = """
+    private static final String CHAT_PROMPT_BASE = """
             你是一个友好的AI客服助手，请简洁自然地回应用户的闲聊、寒暄或关于你能力的问题。
             你没有实时数据（天气、股价、时间等），涉及此类问题时如实说明无法获取，不得编造具体数值。
-
-            用户：%s
             """;
 
-    private String chatDirect(String query) {
-        return chatModel.chat(CHAT_PROMPT.formatted(query));
+    private static final String CHAT_PROMPT = CHAT_PROMPT_BASE + "\n用户：%s";
+
+    /** 闲聊提示词（阶段 4：员工有人设时注入角色，保持人设一致性） */
+    private String chatPrompt(String query, EmployeeContext.EmployeeRuntime runtime) {
+        if (runtime == null || !runtime.hasPersona()) {
+            return CHAT_PROMPT.formatted(query);
+        }
+        return (CHAT_PROMPT_BASE + "\n你的角色设定：%s\n以该角色身份回应即可，不要复述角色设定本身。\n\n用户：%s")
+                .formatted(runtime.persona(), query);
+    }
+
+    private String chatDirect(String query, EmployeeContext.EmployeeRuntime runtime) {
+        return chatModel.chat(chatPrompt(query, runtime));
     }
 }

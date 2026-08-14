@@ -56,12 +56,14 @@ public class HybridRetriever {
      * @param expandedQuery  改写后的查询文本（短查询时用于加路检索，null 则只用原 query）
      * @param keywords       BM25 关键词（由 QueryRewriter 提取）
      * @param topK           最终返回数
-     * @param metadataFilter 元数据过滤（当前未用，预留）
+     * @param filterExpr     Milvus 布尔过滤表达式（如 document_id in ["..."...]；null 不过滤。
+     *                       数字员工 knowledgeScope 经此生效：每条检索路各自过滤）
      */
     public List<TextSegment> search(String query, String expandedQuery, List<String> keywords,
-                                     int topK, dev.langchain4j.store.embedding.filter.Filter metadataFilter) {
+                                     int topK, String filterExpr) {
         try {
             // ========== 路检索策略 ==========
+            // knowledgeScope 过滤：每条检索路各自带 expr（HybridSearchReq 无统一 filter 入参）
 
             // Dense 原query（始终启用，保证不丢原意图）
             Embedding queryEmbedding = embeddingModel.embed(query).content();
@@ -69,6 +71,7 @@ public class HybridRetriever {
                     .vectorFieldName(MilvusConfig.FIELD_DENSE)
                     .vectors(List.of(new FloatVec(queryEmbedding.vector())))
                     .params("{\"ef\": " + hnswEf + "}")
+                    .expr(filterExpr)
                     .topK(topK * 2)
                     .build();
 
@@ -80,6 +83,7 @@ public class HybridRetriever {
                         .vectorFieldName(MilvusConfig.FIELD_DENSE)
                         .vectors(List.of(new FloatVec(expandedEmbedding.vector())))
                         .params("{\"ef\": " + hnswEf + "}")
+                        .expr(filterExpr)
                         .topK(topK * 2)
                         .build();
                 log.info("[混合检索] 短查询加路: 原query={}, expandedQuery={}", query, expandedQuery);
@@ -92,6 +96,7 @@ public class HybridRetriever {
             AnnSearchReq sparseReq = AnnSearchReq.builder()
                     .vectorFieldName(MilvusConfig.FIELD_SPARSE)
                     .vectors(List.of(embeddedText))
+                    .expr(filterExpr)
                     .topK(topK * 2)
                     .build();
 
@@ -126,7 +131,9 @@ public class HybridRetriever {
                     }
                 }
             }
-            log.info("[混合检索] 路数={} dense+sparse BM25 RRF融合={} 条", searchRequests.size(), segments.size());
+            log.info("[混合检索] 路数={} dense+sparse BM25 RRF融合={} 条{}",
+                    searchRequests.size(), segments.size(),
+                    filterExpr != null ? "（过滤: " + filterExpr + "）" : "");
             return segments;
         } catch (Exception e) {
             log.error("[混合检索] 系统异常", e);

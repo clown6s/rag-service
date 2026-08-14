@@ -81,7 +81,8 @@ public class AgentChatController {
         String conversationId = resolveConversationId(req.conversationId());
         AuditContext ctx = AuditContext.capture();
         try {
-            AgentOrchestrator.AgentAnswer result = orchestrator.answer(conversationId, req.query());
+            AgentOrchestrator.AgentAnswer result =
+                    orchestrator.answer(conversationId, req.query(), req.agentId());
             // 整段格式修复（与固定流水线端点一致的兜底）
             String answer = StreamTokenFixer.fixFull(result.answer());
             // 法名引用校验：库外引用追加标注（防引用幻觉）；
@@ -126,7 +127,7 @@ public class AgentChatController {
             // 客户端断开后 emitter 已完成的标记（"already completed" 是断连噪声，不是生成失败）
             final AtomicBoolean closed = new AtomicBoolean(false);
             try {
-                orchestrator.answerStream(conversationId, req.query(), new AgentStreamHandler() {
+                orchestrator.answerStream(conversationId, req.query(), req.agentId(), new AgentStreamHandler() {
                     @Override
                     public void onRoute(String route) {
                         sendSafe(emitter, closed, "route", route);
@@ -280,9 +281,11 @@ public class AgentChatController {
 
     // ==================== 请求/响应 record ====================
 
+    /** agentId 可选：指定数字员工（阶段 4 运行时绑定：人设/知识范围/技能授权），缺省走默认员工 */
     public record AgentChatRequest(
             @NotBlank String query,
-            String conversationId) {}
+            String conversationId,
+            Long agentId) {}
 
     public record AgentChatResponse(
             String answer,

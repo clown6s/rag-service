@@ -2,7 +2,6 @@ package com.zzp.rag.retrieval;
 
 import com.zzp.rag.graph.GraphRetriever;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.store.embedding.filter.Filter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -44,9 +43,12 @@ public class RetrievalPipeline {
     /**
      * 执行完整检索链路
      * @param query          用户原始问题
-     * @param metadataFilter 业务过滤条件
+     * @param milvusFilter   Milvus 布尔过滤表达式（数字员工 knowledgeScope；null 不过滤）
+     * @param includeGraph   是否做知识图谱遍历。带 knowledgeScope 的员工必须 false——
+     *                       图谱是全局实体关系（不按文档归属），范围过滤罩不住它，
+     *                       否则授权范围外内容会从图谱路径漏出
      */
-    public PipelineResult execute(String query, Filter metadataFilter) {
+    public PipelineResult execute(String query, String milvusFilter, boolean includeGraph) {
         long start = System.currentTimeMillis();
 
         // Step 1: Query 改写（Multi-Query + 关键词提取）
@@ -58,7 +60,7 @@ public class RetrievalPipeline {
 
         // Step 2: 混合检索（短查询：原query+expandedQuery双路dense+BM25用expanded；长查询：原query单路）
         List<TextSegment> candidates = hybridRetriever.search(
-                query, expandedQuery, rewritten.keywords(), topK, metadataFilter);
+                query, expandedQuery, rewritten.keywords(), topK, milvusFilter);
         log.info("[检索] 召回: {} 条", candidates.size());
 
         // Step 3: Cross-Encoder 重排（始终用原 query，防漂移）
@@ -82,7 +84,7 @@ public class RetrievalPipeline {
         }
 
         // Step 4: 知识图谱遍历（从用户 query 提取实体，Neo4j 多跳查找关联）
-        String graphContext = graphRetriever.expand(query);
+        String graphContext = includeGraph ? graphRetriever.expand(query) : "";
 
         long elapsed = System.currentTimeMillis() - start;
         log.info("[检索] 完成: {} 条, 图上下文 {}chars, 耗时 {}ms",

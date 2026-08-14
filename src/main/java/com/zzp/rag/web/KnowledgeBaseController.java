@@ -4,11 +4,13 @@ import com.zzp.rag.config.MilvusConfig;
 import com.zzp.rag.graph.EntityExtractor;
 import com.zzp.rag.graph.GraphStore;
 import com.zzp.rag.ingestion.IngestionPipeline;
+import com.google.gson.JsonObject;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.collection.request.DropCollectionReq;
 import io.milvus.v2.service.collection.request.GetCollectionStatsReq;
 import io.milvus.v2.service.collection.response.GetCollectionStatsResp;
 import io.milvus.v2.service.vector.request.DeleteReq;
+import io.milvus.v2.service.vector.request.InsertReq;
 import io.milvus.v2.service.vector.request.QueryReq;
 import io.milvus.v2.service.vector.response.DeleteResp;
 import io.milvus.v2.service.vector.response.QueryResp;
@@ -163,6 +165,89 @@ public class KnowledgeBaseController {
             return ApiResponse.fail("删除失败，请联系管理员");
         }
     }
+
+    /**
+     * 重命名文档标题（改该文档所有 chunk 的 title 标量字段）。
+     * Milvus 无字段级 update 且 pk 为 autoID，走"查询全量 → 删除 → 原向量重插"重建；
+     * dense 向量从查询结果原样带回，不重新向量化（BM25 sparse 由 Function 按 text 自动重算）。
+     */
+    @PatchMapping("/documents/{docId}/title")
+    public ApiResponse<DocumentInfo> renameDocument(@PathVariable String docId,
+                                                    @RequestBody Map<String, String> body) {
+        if (!docId.matches("^[0-9a-fA-F\\-]{36}$")) {
+            return ApiResponse.fail("非法的文档ID格式");
+        }
+        String newTitle = body == null ? null : body.get("title");
+        if (newTitle == null || newTitle.isBlank()) {
+            return ApiResponse.fail("标题不能为空");
+        }
+        newTitle = newTitle.strip();
+        if (newTitle.length() > 200) {
+            return ApiResponse.fail("标题不能超过 200 字");
+        }
+        try {
+            int reinserted = renameChunks(docId, newTitle);
+            if (reinserted == 0) {
+                return ApiResponse.fail("文档不存在或已无片段");
+            }
+            log.info("[管理] 重命名文档 docId={} → {}（重建 {} 个片段）", docId, newTitle, reinserted);
+            return ApiResponse.ok(new DocumentInfo(docId, newTitle));
+        } catch (Exception e) {
+            log.error("[管理] 重命名失败 docId={}", docId, e);
+            return ApiResponse.fail("重命名失败，请联系管理员");
+        }
+    }
+
+    /** 查询该文档全部 chunk（含 dense 向量）→ 删除 → 换标题重插；返回重建片段数 */
+    private int renameChunks(String docId, String newTitle) {
+        java.util.List<JsonObject> rows = new java.util.ArrayList<>();
+        long offset = 0;
+        while (true) {
+            QueryResp resp = milvusClient.query(QueryReq.builder()
+                    .collectionName(collectionName)
+                    .filter("document_id == \"" + docId + "\"")
+                    .outputFields(java.util.List.of("text", "dense", "source"))
+                    .offset(offset)
+                    .limit(1000)
+                    .build());
+            if (resp.getQueryResults().isEmpty()) {
+                break;
+            }
+            for (QueryResp.QueryResult r : resp.getQueryResults()) {
+                Map<String, Object> e = r.getEntity();
+                JsonObject row = new JsonObject();
+                row.addProperty("text", (String) e.get("text"));
+                row.add("dense", GSON.toJsonTree(e.get("dense")));
+                row.addProperty("document_id", docId);
+                row.addProperty("title", newTitle);
+                // source 一并更新：聊天来源展示取 source（=上传文件名），只改 title 会导致
+                // 前端来源标签仍是旧名字（"重命名"语义 = 所有界面上的文档名）
+                row.addProperty("source", newTitle);
+                rows.add(row);
+            }
+            if (resp.getQueryResults().size() < 1000) {
+                break;
+            }
+            offset += 1000;
+        }
+        if (rows.isEmpty()) {
+            return 0;
+        }
+        milvusClient.delete(DeleteReq.builder()
+                .collectionName(collectionName)
+                .filter("document_id == \"" + docId + "\"")
+                .build());
+        for (int i = 0; i < rows.size(); i += 200) {
+            int end = Math.min(i + 200, rows.size());
+            milvusClient.insert(InsertReq.builder()
+                    .collectionName(collectionName)
+                    .data(rows.subList(i, end))
+                    .build());
+        }
+        return rows.size();
+    }
+
+    private static final com.google.gson.Gson GSON = new com.google.gson.Gson();
 
     /**
      * 全量重建索引

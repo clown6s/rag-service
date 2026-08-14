@@ -29,25 +29,34 @@ public class AgentTools {
 
     private final RetrievalPipeline retrievalPipeline;
     private final GraphRetriever graphRetriever;
+    private final EmployeeContext employeeContext;
     private final ThreadLocal<SearchRecord> localSearch = new ThreadLocal<>();
 
     /** 最高相关度分数低于该阈值视为"未命中"（bge-reranker sigmoid 分数 0-1） */
     @Value("${rag.agent.min-relevance-score:0.3}")
     private double minRelevanceScore;
 
-    public AgentTools(RetrievalPipeline retrievalPipeline, GraphRetriever graphRetriever) {
+    public AgentTools(RetrievalPipeline retrievalPipeline, GraphRetriever graphRetriever,
+                      EmployeeContext employeeContext) {
         this.retrievalPipeline = retrievalPipeline;
         this.graphRetriever = graphRetriever;
+        this.employeeContext = employeeContext;
     }
 
     /**
      * 检索知识库（改写→混合检索→重排→图遍历全链路）
      * LLM 判断用户问题需要资料支撑时调用，可多次调用补充信息
+     * <p>
+     * 阶段 4：员工 knowledgeScope 由 SkillRegistryToolProvider 的包装执行器在工具线程注入
+     * （EmployeeContext.toolScope），此处消费一次即清理——范围过滤对 LLM 透明。
      */
     @Tool("检索知识库，返回相关文档片段。用户问知识性/事实性问题时调用，可多次调用补充信息")
     public String searchKnowledgeBase(@P("检索查询词") String query) {
-        log.info("[AgentTool] 检索知识库: {}", query);
-        var result = retrievalPipeline.execute(query, null);
+        String scopeExpr = employeeContext.consumeToolScope();
+        log.info("[AgentTool] 检索知识库: {}{}", query,
+                scopeExpr != null ? "（范围过滤: " + scopeExpr + "）" : "");
+        // 范围过滤时不走图谱（图谱不按文档归属，会漏出授权范围外内容）
+        var result = retrievalPipeline.execute(query, scopeExpr, scopeExpr == null);
         SearchRecord prev = localSearch.get();
         localSearch.set(new SearchRecord(
                 result.getSources(), result.rerankDegraded(), true,
