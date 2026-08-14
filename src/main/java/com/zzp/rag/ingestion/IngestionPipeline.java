@@ -12,6 +12,8 @@ import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.vector.request.InsertReq;
+import io.milvus.v2.service.vector.request.QueryReq;
+import io.milvus.v2.service.vector.response.QueryResp;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -123,6 +125,51 @@ public class IngestionPipeline {
             }
         } catch (Exception e) {
             log.warn("[摄入] 加载状态文件失败: {}", e.getMessage());
+        }
+        pruneStaleStatuses();
+    }
+
+    /**
+     * 启动剪枝：对照 Milvus 实际存在的 document_id，清掉状态文件中已删/重传文档的残留记录
+     * （文档删除只清 chunks，状态文件曾逐代累积到 100+ 条；此处保证重启后状态与知识库一致）
+     */
+    private void pruneStaleStatuses() {
+        try {
+            java.util.Set<String> liveDocIds = new java.util.HashSet<>();
+            long pageOffset = 0;
+            while (true) {
+                QueryResp resp = milvusClient.query(QueryReq.builder()
+                        .collectionName(collectionName)
+                        .filter("id >= 0")
+                        .outputFields(java.util.List.of("document_id"))
+                        .offset(pageOffset)
+                        .limit(1000)
+                        .build());
+                if (resp.getQueryResults().isEmpty()) {
+                    break;
+                }
+                for (QueryResp.QueryResult r : resp.getQueryResults()) {
+                    Object docId = r.getEntity().get("document_id");
+                    if (docId != null) {
+                        liveDocIds.add((String) docId);
+                    }
+                }
+                if (resp.getQueryResults().size() < 1000) {
+                    break;
+                }
+                pageOffset += 1000;
+            }
+            // 快照 key 再删，避免遍历中修改 access-order LinkedHashMap
+            List<String> stale = new ArrayList<>(statusMap.keySet());
+            stale.removeAll(liveDocIds);
+            stale.forEach(statusMap::remove);
+            if (!stale.isEmpty()) {
+                log.info("[摄入] 清理历史残留状态 {} 条（已不在知识库）", stale.size());
+                persistStatus();
+            }
+        } catch (Exception e) {
+            // Milvus 不可用时跳过剪枝（软依赖：状态文件残留不影响主链路）
+            log.debug("[摄入] 状态剪枝跳过（Milvus 不可用）: {}", e.getMessage());
         }
     }
 
@@ -272,6 +319,70 @@ public class IngestionPipeline {
             }, executor));
         }
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+    }
+
+    /**
+     * 全量重建图谱（管理接口用）：清空 Neo4j 后从 Milvus 遍历当前全部 chunk 重新实体抽取。
+     * 收集阶段同步（快），抽取阶段异步（大库约 10 分钟+），返回排队的 chunk 数。
+     */
+    public int rebuildGraph() {
+        try {
+            // 1. 清空旧图（旧实例/已删文档的僵尸实体一并清除）
+            graphStore.wipeAll();
+            // 2. 从 Milvus 分页收集当前全部 chunk（按 docId 保序分组，chunkIndex 与摄入时一致）
+            java.util.LinkedHashMap<String, List<String>> docTexts = new java.util.LinkedHashMap<>();
+            long pageOffset = 0;
+            while (true) {
+                QueryResp resp = milvusClient.query(QueryReq.builder()
+                        .collectionName(collectionName)
+                        .filter("id >= 0")
+                        .outputFields(java.util.List.of("document_id", "text"))
+                        .offset(pageOffset)
+                        .limit(1000)
+                        .build());
+                if (resp.getQueryResults().isEmpty()) {
+                    break;
+                }
+                for (QueryResp.QueryResult r : resp.getQueryResults()) {
+                    Object docId = r.getEntity().get("document_id");
+                    Object text = r.getEntity().get("text");
+                    if (docId != null && text != null) {
+                        docTexts.computeIfAbsent((String) docId, k -> new ArrayList<>()).add((String) text);
+                    }
+                }
+                if (resp.getQueryResults().size() < 1000) {
+                    break;
+                }
+                pageOffset += 1000;
+            }
+            int total = docTexts.values().stream().mapToInt(List::size).sum();
+            if (total == 0) {
+                log.info("[摄入] 图谱重建：库中无 chunk，跳过");
+                return 0;
+            }
+            log.info("[摄入] 图谱重建启动：{} 个文档 / {} chunks", docTexts.size(), total);
+            // 3. 后台抽取（复用图构建线程池 + 限流；重建期间新摄入的图构建共享该池排队）
+            if (graphExecutor == null || graphExecutor.isShutdown()) {
+                graphExecutor = Executors.newFixedThreadPool(graphConcurrency, r -> {
+                    Thread t = new Thread(r, "graph-build");
+                    t.setDaemon(true);
+                    return t;
+                });
+            }
+            ExecutorService executor = graphExecutor;
+            java.util.Map<String, List<String>> snapshot = new java.util.LinkedHashMap<>(docTexts);
+            executor.execute(() -> {
+                for (var entry : snapshot.entrySet()) {
+                    runGraphBuild(entry.getValue().stream().map(TextSegment::from).toList(),
+                            entry.getKey(), executor);
+                }
+                log.info("[摄入] 图谱重建完成");
+            });
+            return total;
+        } catch (Exception e) {
+            log.error("[摄入] 图谱重建启动失败", e);
+            return -1;
+        }
     }
 
     /** 懒初始化图构建限流器 */

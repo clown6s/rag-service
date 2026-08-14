@@ -90,7 +90,8 @@ public class AgentChatController {
                 answer = answer + annotation;
             }
             result = new AgentOrchestrator.AgentAnswer(
-                    answer, result.sources(), result.route(), result.rerankDegraded());
+                    answer, result.sources(), result.route(), result.rerankDegraded(),
+                    result.graphContextChars());
             auditService.record(buildAuditEvent(req, result, ctx,
                     System.currentTimeMillis() - start, "SUCCESS", null));
             return ApiResponse.ok(new AgentChatResponse(
@@ -148,7 +149,8 @@ public class AgentChatController {
                     }
 
                     @Override
-                    public void onComplete(String route, List<String> sources, boolean degraded) {
+                    public void onComplete(String route, List<String> sources, boolean degraded,
+                                           int graphContextChars) {
                         if (closed.get()) {
                             return;   // 客户端已断开，不再下发也不记审计
                         }
@@ -170,7 +172,8 @@ public class AgentChatController {
                             emitter.complete();
                             auditService.record(buildAuditEvent(req,
                                     new AgentOrchestrator.AgentAnswer(
-                                            fullAnswer.toString(), sources, route, degraded),
+                                            fullAnswer.toString(), sources, route, degraded,
+                                            graphContextChars),
                                     auditCtx, System.currentTimeMillis() - start, "SUCCESS", null));
                         }
                     }
@@ -257,7 +260,7 @@ public class AgentChatController {
                 sources,
                 0,                          // retrievalMs 在工具内部，暂未透出
                 result != null && result.rerankDegraded(),
-                0,
+                result != null ? result.graphContextChars() : 0,
                 AuditEvent.truncate(answer, 500),
                 answer != null ? answer.length() : 0,
                 totalMs,

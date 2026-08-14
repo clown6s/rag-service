@@ -34,6 +34,8 @@ public final class StreamTokenFixer {
     public static String fixFull(String text) {
         if (text == null) return text;
         String result = sanitizeCitations(fixToken(text));
+        // 0. "---### 标题" 粘连 → "### 标题"（LLM 常把分隔线写进标题行，直接破坏渲染）
+        result = result.replaceAll("(?m)^-{2,}\\s*(#{1,3})(?=\\s)", "$1");
         // 1. ### 子标题 → 加粗段落（规则只允许一个 ## 主标题）
         result = result.replaceAll("(?m)^#{3,}\\s*(.+)$", "**$1**");
         // 2. - / * 无序列表 → 有序列表（规则要求 1. 2. 3.）

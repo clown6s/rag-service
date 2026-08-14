@@ -1,6 +1,8 @@
 package com.zzp.rag.web;
 
 import com.zzp.rag.config.MilvusConfig;
+import com.zzp.rag.graph.EntityExtractor;
+import com.zzp.rag.graph.GraphStore;
 import com.zzp.rag.ingestion.IngestionPipeline;
 import io.milvus.v2.client.MilvusClientV2;
 import io.milvus.v2.service.collection.request.DropCollectionReq;
@@ -32,12 +34,20 @@ public class KnowledgeBaseController {
     private final MilvusClientV2 milvusClient;
     private final MilvusConfig milvusConfig;
     private final IngestionPipeline ingestionPipeline;
+    private final GraphStore graphStore;
+    private final EntityExtractor entityExtractor;
+
+    @Value("${rag.graph.max-hops:2}")
+    private int maxHops;
 
     public KnowledgeBaseController(@Lazy MilvusClientV2 milvusClient, MilvusConfig milvusConfig,
-                                   IngestionPipeline ingestionPipeline) {
+                                   IngestionPipeline ingestionPipeline, GraphStore graphStore,
+                                   EntityExtractor entityExtractor) {
         this.milvusClient = milvusClient;
         this.milvusConfig = milvusConfig;
         this.ingestionPipeline = ingestionPipeline;
+        this.graphStore = graphStore;
+        this.entityExtractor = entityExtractor;
     }
 
     @Value("${milvus.collection}")
@@ -140,6 +150,41 @@ public class KnowledgeBaseController {
             log.error("[管理] 清空索引失败", e);
             return ApiResponse.fail("清空索引失败，请联系管理员");
         }
+    }
+
+    /**
+     * 知识图谱盘点：实体/关系总数、按文档分布、孤儿实体、样例实体名
+     * GET /api/rag/admin/graph/stats
+     */
+    @GetMapping("/graph/stats")
+    public ApiResponse<GraphStore.GraphStats> graphStats() {
+        return ApiResponse.ok(graphStore.stats());
+    }
+
+    /**
+     * 图谱链路调试：实体提取 → 图遍历全流程诊断（诊断 graphContext 恒空的断点在哪）
+     * GET /api/rag/admin/graph/debug?query=心衰
+     */
+    @GetMapping("/graph/debug")
+    public ApiResponse<java.util.Map<String, Object>> graphDebug(@RequestParam String query) {
+        java.util.List<String> names = entityExtractor.extractEntityNames(query);
+        var result = graphStore.traverse(names, maxHops);
+        return ApiResponse.ok(java.util.Map.of(
+                "extractedEntities", names,
+                "pathCount", result.paths().size(),
+                "context", result.format()));
+    }
+
+    /**
+     * 全量重建图谱：清空 Neo4j 后从 Milvus 遍历当前全部 chunk 重新实体抽取（异步，大库约 10 分钟+）
+     * POST /api/rag/admin/graph/rebuild
+     */
+    @PostMapping("/graph/rebuild")
+    public ApiResponse<java.util.Map<String, Object>> rebuildGraph() {
+        int chunks = ingestionPipeline.rebuildGraph();
+        return ApiResponse.ok(java.util.Map.of(
+                "queuedChunks", chunks,
+                "status", chunks > 0 ? "已清空旧图并启动异步重建" : "启动失败（查看服务日志）"));
     }
 
     /**

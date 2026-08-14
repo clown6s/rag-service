@@ -46,6 +46,17 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.fail(msg));
     }
 
+    /**
+     * 静态资源 404（浏览器访问根路径、favicon、探测请求等）——纯噪声，不按 ERROR 记录
+     */
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNoResource(
+            org.springframework.web.servlet.resource.NoResourceFoundException e) {
+        log.debug("[异常] 无匹配资源: {}", e.getResourcePath());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiResponse.fail("资源不存在"));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleGeneric(Exception e) {
         String traceId = java.util.UUID.randomUUID().toString().substring(0, 8);

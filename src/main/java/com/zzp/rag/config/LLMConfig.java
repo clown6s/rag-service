@@ -115,4 +115,23 @@ public class LLMConfig {
                 .timeout(Duration.ofSeconds(60))
                 .build();
     }
+
+    /**
+     * 用于答案事实校验的模型（AgentOrchestrator 验证层）
+     * 输出为修订后的完整回答，maxTokens=4096 保证长答案不被截断
+     * （历史坑：复用 contextualChatModel(maxTokens=256) 导致修订答案在 380 字处被切断）
+     */
+    @Bean
+    @Qualifier("verifyChatModel")
+    public ChatModel verifyChatModel(
+            @Value("${langchain4j.open-ai.deepseek.verify.model-name:qwen-turbo}") String model) {
+        return OpenAiChatModel.builder()
+                .apiKey(apiKey)
+                .baseUrl(baseUrl)
+                .modelName(model)
+                .temperature(0.1)
+                .maxTokens(4096)
+                .timeout(Duration.ofSeconds(60))
+                .build();
+    }
 }
