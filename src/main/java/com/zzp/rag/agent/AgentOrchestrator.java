@@ -282,6 +282,16 @@ public class AgentOrchestrator {
     private static final java.util.regex.Pattern CN_DRUG = java.util.regex.Pattern.compile(
             "[\\u4e00-\\u9fa5]{1,6}(霉素|昔布|洛尔|普利|沙坦|他汀|地平|西汀|唑|米松|磺吡啶|环素|西林|替尼|单抗|洛芬|尼酮|格列酮|丁胺|那非|坦|卡尼|前列素|双胍)");
 
+    /**
+     * 高危中文短语词表：模型通用知识补全的重灾区（生活方式干预类具体表述——
+     * 实况："高血压的预防"答出"每周2次力量训练/胰岛素敏感性/正念冥想"等
+     * 内科学高血压内容里根本没有的说法，小模型软校验全部放行）。
+     * 词表内短语必须逐字出现在检索资料中，否则删除所在句。观察漏网即加词。
+     */
+    private static final List<String> CN_TERMS = List.of(
+            "力量训练", "胰岛素敏感性", "心理平衡", "正念冥想", "深呼吸训练",
+            "血管弹性", "交感神经", "动态血压", "睡眠不足");
+
     /** 数值+单位模式（"140 mmHg""30分钟""15：35岁""约30%""23°C"等，分隔符归一化后比对资料） */
     private static final java.util.regex.Pattern NUM_UNIT = java.util.regex.Pattern.compile(
             "\\d+(?:[.：:、～~\\-]\\d+)?\\s*(?:mmHg|mmol/L|kg/m²|°C|℃|mg|ml|g|kg|cm|分钟|小时|天|周|月|年|岁|%|次|度)");
@@ -396,6 +406,13 @@ public class AgentOrchestrator {
                 missing.add(e.getKey());
                 log.info("[Agent] 高危术语锚定失败: {}（语境应含 {}）",
                         e.getKey(), String.join("/", e.getValue()));
+            }
+        }
+        // 6. 高危中文短语：词表内短语必须逐字出现在资料中（通用知识补全重灾区）
+        for (String t : CN_TERMS) {
+            if (answer.contains(t) && !ctxLower.contains(t)) {
+                missing.add(t);
+                log.info("[Agent] 高危中文短语缺失: {}", t);
             }
         }
         if (!missing.isEmpty()) {
