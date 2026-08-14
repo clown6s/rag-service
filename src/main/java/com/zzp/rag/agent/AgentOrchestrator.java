@@ -301,13 +301,17 @@ public class AgentOrchestrator {
                 missing.add(t);
             }
         }
-        // 3. 数值+单位（分隔符归一化后比对，兼容"15：35岁"vs"15-35岁"）
+        // 3. 数值+单位：多位数本体比对（兼容"2022年1月10日"vs"2022-01-10"的格式差异——
+        //    历史坑：整串字面比对把合法中文日期误判缺失而整句误删；单位/单位数不作为缺失依据）
         java.util.regex.Matcher nm = NUM_UNIT.matcher(answer);
         while (nm.find()) {
             String t = nm.group();
-            String norm = normalizeForCompare(t);
-            if (!normCtx.contains(norm)) {
-                missing.add(norm);
+            java.util.regex.Matcher digitRun = java.util.regex.Pattern.compile("\\d{2,}").matcher(t);
+            while (digitRun.find()) {
+                String d = digitRun.group();
+                if (!normCtx.contains(d)) {
+                    missing.add(d);
+                }
             }
         }
         // 4. 人名+引文：引文本身可能在资料中，作者名不在 → 伪造归因（李煜/李清照类错误）

@@ -20,6 +20,8 @@ milvus:
 langchain4j:
   open-ai:
     deepseek:
+      # 本段是全部 LLM 通道的共享段（命名是历史债）：chat/reasoner/contextual/graph/verify
+      # 五个模型 bean 都从这里取 base-url/api-key——改这里即完成"数据不出域"切换
       base-url: ${LOCAL_LLM_BASE_URL:http://127.0.0.1:8686/v1}   # vLLM（OpenAI 兼容）
       api-key: ${LOCAL_LLM_API_KEY:none}                          # vLLM 默认无鉴权，占位即可
       chat-model:
@@ -30,8 +32,8 @@ langchain4j:
       reasoner:
         model-name: ${LOCAL_REASONER_MODEL:qwen2.5-72b-instruct}  # 意图路由（本地用思考模式/同模型）
         temperature: 0.1
-        max-tokens: 2048
-        timeout: 120s
+        max-tokens: 1024
+        timeout: 10s                    # 与 base 一致：路由失败快速降级（历史坑：120s 卡死）
   embedding:
     # vLLM 部署 BGE-M3；切换本地前先做向量抽检（docs/architecture.md §3.1 迁移路径）
     base-url: ${LOCAL_EMBED_BASE_URL:http://127.0.0.1:8686/v1}
@@ -42,6 +44,6 @@ langchain4j:
 # 生产日志精简
 logging:
   level:
-    com.jiadaojia.rag: INFO
+    com.zzp.rag: INFO
     dev.langchain4j: WARN
     root: WARN

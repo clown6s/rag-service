@@ -1,3 +1,13 @@
+# ============================================================
+# 配置导航
+#   application.yml      — 基础配置（开发默认），全部敏感值走 .env
+#   application-dev.yml  — 开发日志级别
+#   application-prod.yml — 本地推理（vLLM Qwen + BGE-M3），LLM/Embedding 切 base-url
+#   .env                 — 密钥（不入库，模板见 .env.example）
+# 命名历史债：langchain4j.open-ai.deepseek 是全部 LLM 通道的共享段名
+#   （chat/reasoner/contextual/graph/verify 五个 bean 共用其 api-key/base-url），
+#   当前 dev 实际指向千问 DashScope，prod 覆盖为本地 vLLM
+# ============================================================
 server:
   port: 8080
 

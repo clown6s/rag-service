@@ -10,5 +10,5 @@
 # dev 日志更详细
 logging:
   level:
-    com.jiadaojia.rag: DEBUG
-    dev.langchain4j: DEBUG
+    com.zzp.rag: DEBUG
+    dev.langchain4j: WARN   # 1.17.2 内部重连等噪声较多
