@@ -99,3 +99,14 @@ CREATE TABLE IF NOT EXISTS sys_user (
   last_login_at DATETIME     NULL,
   UNIQUE KEY uk_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='后台账号（统一身份最小闭环）';
+
+CREATE TABLE IF NOT EXISTS feedback_adopt (
+  id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  query_hash CHAR(64)     NOT NULL COMMENT '问题 SHA-256，防重复采纳',
+  query      TEXT         NOT NULL,
+  answer     TEXT         NOT NULL,
+  source     VARCHAR(512) NULL,
+  adopted_by VARCHAR(64)  NULL COMMENT '采纳人（登录用户名）',
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_query_hash (query_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='上下文飞轮：人工采纳的问答对';
