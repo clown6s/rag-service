@@ -98,9 +98,14 @@ public class AgentOrchestrator {
             boolean graphAllowed = runtime == null || !runtime.hasScope();
             RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(
                     query, runtime != null ? runtime.scopeExpr() : null, graphAllowed);
-            boolean retrievalEmpty = pre.segments().isEmpty() && pre.graphContext().isBlank();
             boolean mcpSkillsAvailable = skillRegistryToolProvider.mcpSkillsEnabled(
                     runtime != null ? runtime.employeeId() : -1);
+            // 有 MCP 工具的员工：图谱不算命中——图谱-only 对业务问题纯噪音
+            // （实况："我们公司有几个人"被图谱的"公司→实施犯罪"关系截胡，模型没去调工具），
+            // 文档无命中直接放行工具循环，让业务工具获得回答机会
+            boolean retrievalEmpty = mcpSkillsAvailable
+                    ? pre.segments().isEmpty()
+                    : pre.segments().isEmpty() && pre.graphContext().isBlank();
             if (retrievalEmpty && !mcpSkillsAvailable) {
                 log.info("[Agent] 预检索无结果，使用确定性兜底回答");
                 return new AgentAnswer(NO_ANSWER, List.of(), route, pre.rerankDegraded(),
@@ -328,7 +333,9 @@ public class AgentOrchestrator {
     private static final java.util.regex.Pattern EXTENSION_OFFER = java.util.regex.Pattern.compile(
             "欢迎随时|欢迎告诉|如需我|需要我帮|我可以为你|我可为您|我可为你|请确认是否"
                     + "|随时提出|可立即为你|请告诉我您最关注|您希望优先了解"
-                    + "|以下(是|为).{0,12}(摘要|总结)|摘要如下|核心内容如下");
+                    + "|以下(是|为).{0,12}(摘要|总结)|摘要如下|核心内容如下"
+                    + "|是否需要|如您能提供|建议您(通过|向|咨询|联系|查看|使用)"
+                    + "|知识图谱中未|资料中未包含");
 
     /**
      * 确定性术语核对：提取回答中出现的缩写/带数字术语/中文药物名/数值单位，
@@ -454,9 +461,12 @@ public class AgentOrchestrator {
         boolean graphAllowed = runtime == null || !runtime.hasScope();
         RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(
                 query, runtime != null ? runtime.scopeExpr() : null, graphAllowed);
-        boolean retrievalEmpty = pre.segments().isEmpty() && pre.graphContext().isBlank();
         boolean mcpSkillsAvailable = skillRegistryToolProvider.mcpSkillsEnabled(
                 runtime != null ? runtime.employeeId() : -1);
+        // 有 MCP 工具的员工：图谱不算命中（同非流式，图谱-only 会截胡业务工具循环）
+        boolean retrievalEmpty = mcpSkillsAvailable
+                ? pre.segments().isEmpty()
+                : pre.segments().isEmpty() && pre.graphContext().isBlank();
         if (retrievalEmpty && !mcpSkillsAvailable) {
             log.info("[Agent] 预检索无结果，流式下发兜底句式");
             employeeContext.unbind(conversationId);
