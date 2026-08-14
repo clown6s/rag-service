@@ -36,7 +36,7 @@ public final class StreamTokenFixer {
         String result = sanitizeCitations(fixToken(text));
         // 0. 装饰性 emoji 剥除——模型的分节/强调标记漂移（✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯💡💊❗），
         //    语义由加粗承担；行首行内都剥（这些符号在本平台答案里纯装饰，无信息量）
-        result = result.replaceAll("[✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯💡💊❗]+\\s*", "");
+        result = result.replaceAll("[✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯💡💊❗⏳⌛]+\\s*", "");
         // 0.05 整行加粗的标题尾部空格塌缩（"**标题  **" 的收尾空格会让 CommonMark
         //      不识别闭合 → 原样显示星号）
         result = result.replaceAll("(?m)^(\\*\\*[^*\\n]+?)\\s+(\\*\\*)[ \\t]*$", "$1$2");

@@ -145,14 +145,30 @@ public class FeishuChatBridge {
     }
 
     /** Markdown → 飞书纯文本（text 消息不支持 markdown 渲染）：
-     *  剥加粗/斜体星号，## 标题转【】，<br> 转换行、其余 HTML 标签剥除，保留有序编号与换行 */
+     *  剥加粗/斜体星号，## 标题转【】，<br> 转换行、其余 HTML 标签剥除，
+     *  表格转可读文本行（分隔行删除、数据行去首尾管道、中间管道换全角 ｜），保留有序编号与换行 */
     private String toFeishuText(String markdown) {
-        return markdown
+        String text = markdown
                 .replaceAll("(?m)^##\\s+(.+)$", "【$1】")
                 .replaceAll("\\*\\*([^*\\n]+)\\*\\*", "$1")
                 .replaceAll("(?i)<br\\s*/?>", "\n")
                 .replaceAll("<[^>]+>", "")
-                .replaceAll("(?m)^[\\s>]*>\\s*", "")
-                .strip();
+                .replaceAll("(?m)^[\\s>]*>\\s*", "");
+        // 表格 → 可读文本：纯文本渠道里管道符形态很丑（"| 年限 | 天数 |"）
+        StringBuilder sb = new StringBuilder();
+        for (String line : text.split("\n", -1)) {
+            String stripped = line.strip();
+            if (stripped.matches("\\|[\\s|:\\-]+\\|")) {
+                continue;   // 分隔行（|---|---|）删除
+            }
+            if (stripped.startsWith("|") && stripped.endsWith("|") && stripped.indexOf('|', 1) >= 0) {
+                String inner = stripped.substring(1, stripped.length() - 1);
+                sb.append(inner.replace("|", "｜").strip());
+            } else {
+                sb.append(line);
+            }
+            sb.append('\n');
+        }
+        return sb.toString().strip();
     }
 }
