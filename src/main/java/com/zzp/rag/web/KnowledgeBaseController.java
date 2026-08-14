@@ -60,12 +60,14 @@ public class KnowledgeBaseController {
     private String indexType;
 
     public record DeleteResult(String docId, long chunksRemoved) {}
-
     public record DocumentInfo(String docId, String title) {}
+    public record DocumentDetail(String docId, String title, long chunks, String status, String error) {}
+    public record ReindexResult(String status) {}
+    public record StatsResult(String collection, String status, long totalDocuments,
+                              long totalChunks, int vectorDimension, String indexType) {}
 
     /**
      * 列出所有已摄入文档（按 document_id 去重，从 Milvus query 聚合）
-     * 支持分页：offset 偏移量，limit 每页数量
      */
     @GetMapping("/documents")
     public ApiResponse<java.util.List<DocumentInfo>> listDocuments(
@@ -73,30 +75,24 @@ public class KnowledgeBaseController {
             @RequestParam(defaultValue = "1000") int limit) {
         try {
             java.util.Map<String, DocumentInfo> docs = new java.util.LinkedHashMap<>();
-            // 分页遍历全库：单次 query 有行数上限，chunk 总量超 1000 后必须翻页
-            // （历史 bug：只查前 1000 行导致列表漏文档）
             final int pageSize = Math.min(Math.max(limit, 100), 1000);
             long pageOffset = offset;
             int guardPages = 0;
             while (guardPages++ < 1000) {
                 QueryResp resp = milvusClient.query(QueryReq.builder()
                         .collectionName(collectionName)
-                        .filter("id >= 0")  // Milvus query 需要 filter，id>=0 获取所有行
+                        .filter("id >= 0")
                         .outputFields(java.util.List.of("document_id", "title"))
                         .offset(pageOffset)
                         .limit(pageSize)
                         .build());
-                if (resp.getQueryResults().isEmpty()) {
-                    break;
-                }
+                if (resp.getQueryResults().isEmpty()) break;
                 for (QueryResp.QueryResult r : resp.getQueryResults()) {
                     String docId = (String) r.getEntity().get("document_id");
                     String title = (String) r.getEntity().get("title");
                     if (docId != null) docs.putIfAbsent(docId, new DocumentInfo(docId, title));
                 }
-                if (resp.getQueryResults().size() < pageSize) {
-                    break;   // 最后一页
-                }
+                if (resp.getQueryResults().size() < pageSize) break;
                 pageOffset += pageSize;
             }
             return ApiResponse.ok(new java.util.ArrayList<>(docs.values()));
@@ -105,9 +101,45 @@ public class KnowledgeBaseController {
             return ApiResponse.ok(java.util.List.of());
         }
     }
-    public record ReindexResult(String status) {}
-    public record StatsResult(String collection, String status, long totalDocuments,
-                              long totalChunks, int vectorDimension, String indexType) {}
+
+    /**
+     * 列出所有已摄入文档（带详情：chunk 数、状态）
+     */
+    @GetMapping("/documents/details")
+    public ApiResponse<java.util.List<DocumentDetail>> listDocumentsWithDetails() {
+        try {
+            java.util.Map<String, DocumentDetail> docs = new java.util.LinkedHashMap<>();
+            final int pageSize = 1000;
+            long pageOffset = 0;
+            while (true) {
+                QueryResp resp = milvusClient.query(QueryReq.builder()
+                        .collectionName(collectionName)
+                        .filter("id >= 0")
+                        .outputFields(java.util.List.of("document_id", "title"))
+                        .offset(pageOffset)
+                        .limit(pageSize)
+                        .build());
+                if (resp.getQueryResults().isEmpty()) break;
+                for (QueryResp.QueryResult r : resp.getQueryResults()) {
+                    String docId = (String) r.getEntity().get("document_id");
+                    String title = (String) r.getEntity().get("title");
+                    if (docId != null && !docs.containsKey(docId)) {
+                        IngestionPipeline.IngestionStatus st = ingestionPipeline.getStatus(docId);
+                        long chunks = st.totalChunks() != null ? st.totalChunks() : 0;
+                        String status = st.status();
+                        String error = st.error();
+                        docs.put(docId, new DocumentDetail(docId, title, chunks, status, error));
+                    }
+                }
+                if (resp.getQueryResults().size() < pageSize) break;
+                pageOffset += pageSize;
+            }
+            return ApiResponse.ok(new java.util.ArrayList<>(docs.values()));
+        } catch (Exception e) {
+            log.warn("[管理] 列出文档详情失败: {}", e.getMessage());
+            return ApiResponse.ok(java.util.List.of());
+        }
+    }
 
     /**
      * 按文档 ID 删除全部 chunks
@@ -124,7 +156,6 @@ public class KnowledgeBaseController {
                     .build());
             long deleted = resp.getDeleteCnt();
             log.info("[管理] 删除文档 docId={} 删除chunks={}", docId, deleted);
-            // 同步清理摄入状态记录（历史残留：状态文件曾累积已删文档记录）
             ingestionPipeline.removeStatus(docId);
             return ApiResponse.ok(new DeleteResult(docId, deleted));
         } catch (Exception e) {
@@ -134,15 +165,12 @@ public class KnowledgeBaseController {
     }
 
     /**
-     * 全量重建索引（清空 collection + 重新摄入）
+     * 全量重建索引
      */
     @PostMapping("/reindex")
     public ApiResponse<ReindexResult> reindex() {
         try {
-            milvusClient.dropCollection(
-                    DropCollectionReq.builder()
-                            .collectionName(collectionName)
-                            .build());
+            milvusClient.dropCollection(DropCollectionReq.builder().collectionName(collectionName).build());
             log.info("[管理] 索引已清空，重建 BM25 collection...");
             milvusConfig.ensureCollectionExists(milvusClient);
             return ApiResponse.ok(new ReindexResult("索引已重建（BM25 schema），请重新摄入文档"));
@@ -153,8 +181,7 @@ public class KnowledgeBaseController {
     }
 
     /**
-     * 知识图谱盘点：实体/关系总数、按文档分布、孤儿实体、样例实体名
-     * GET /api/rag/admin/graph/stats
+     * 知识图谱盘点
      */
     @GetMapping("/graph/stats")
     public ApiResponse<GraphStore.GraphStats> graphStats() {
@@ -162,8 +189,7 @@ public class KnowledgeBaseController {
     }
 
     /**
-     * 图谱链路调试：实体提取 → 图遍历全流程诊断（诊断 graphContext 恒空的断点在哪）
-     * GET /api/rag/admin/graph/debug?query=心衰
+     * 图谱链路调试
      */
     @GetMapping("/graph/debug")
     public ApiResponse<java.util.Map<String, Object>> graphDebug(@RequestParam String query) {
@@ -176,8 +202,7 @@ public class KnowledgeBaseController {
     }
 
     /**
-     * 全量重建图谱：清空 Neo4j 后从 Milvus 遍历当前全部 chunk 重新实体抽取（异步，大库约 10 分钟+）
-     * POST /api/rag/admin/graph/rebuild
+     * 全量重建图谱
      */
     @PostMapping("/graph/rebuild")
     public ApiResponse<java.util.Map<String, Object>> rebuildGraph() {
@@ -194,9 +219,7 @@ public class KnowledgeBaseController {
     public ApiResponse<StatsResult> stats() {
         try {
             GetCollectionStatsResp statsResp = milvusClient.getCollectionStats(
-                    GetCollectionStatsReq.builder()
-                            .collectionName(collectionName)
-                            .build());
+                    GetCollectionStatsReq.builder().collectionName(collectionName).build());
             long rowCount = statsResp.getNumOfEntities();
             log.info("[管理] 统计 collection={} rows={}", collectionName, rowCount);
             return ApiResponse.ok(new StatsResult(
@@ -209,9 +232,7 @@ public class KnowledgeBaseController {
     }
 
     /**
-     * 诊断接口：按关键词搜索 Milvus chunks，查看原始数据
-     * GET /api/rag/admin/debug/search?keyword=龙门&limit=10
-     * GET /api/rag/admin/debug/search?source=导游面试问答.doc&limit=50  (按文件名查所有chunk)
+     * 诊断接口：按关键词搜索 Milvus chunks
      */
     @GetMapping("/debug/search")
     public ApiResponse<java.util.List<ChunkInfo>> debugSearch(
@@ -221,7 +242,6 @@ public class KnowledgeBaseController {
         try {
             String filter;
             if (source != null && !source.isBlank()) {
-                // 按文件名查所有chunk（不用TEXT_MATCH，直接标量过滤）
                 filter = "source == \"" + escapeFilterValue(source) + "\"";
             } else if (keyword != null && !keyword.isBlank()) {
                 filter = "TEXT_MATCH(text, '" + escapeFilterValue(keyword) + "')";
@@ -242,9 +262,7 @@ public class KnowledgeBaseController {
                 String src = (String) entity.get("source");
                 String docId = (String) entity.get("document_id");
                 String title = (String) entity.get("title");
-                // 截断过长内容，保留前300字方便查看关键词
-                String preview = text != null && text.length() > 300
-                        ? text.substring(0, 300) + "..." : text;
+                String preview = text != null && text.length() > 300 ? text.substring(0, 300) + "..." : text;
                 chunks.add(new ChunkInfo(docId, title, src, preview, text != null ? text.length() : 0));
             }
             log.info("[诊断] keyword={} source={} 找到 {} 条chunks", keyword, source, chunks.size());
@@ -255,18 +273,10 @@ public class KnowledgeBaseController {
         }
     }
 
-    /** 诊断 chunk 信息 */
     public record ChunkInfo(String docId, String title, String source, String preview, int fullLength) {}
 
-    /**
-     * 转义 Milvus filter 表达式中的用户输入，防止注入
-     * 转义反斜杠和引号（双引号/单引号都转义，兼容两种 filter 写法）
-     */
     private String escapeFilterValue(String input) {
         if (input == null) return "";
-        return input.replace("\\", "\\\\")
-                     .replace("\"", "\\\"")
-                     .replace("'", "\\'");
+        return input.replace("\\", "\\\\").replace("\"", "\\\"").replace("'", "\\'");
     }
-
 }

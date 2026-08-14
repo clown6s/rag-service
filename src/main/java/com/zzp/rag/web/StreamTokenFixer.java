@@ -45,6 +45,8 @@ public final class StreamTokenFixer {
         result = result.replaceAll("(?<=[。！？；])>\\s*", "");
         // 4. 连续冒号塌缩（"：："是模型常见手滑）
         result = result.replaceAll("：{2,}", "：");
+        // 5. 未闭合的加粗行（模型写 "**标题1.内容" 漏了收尾 **）→ 剥星号按普通文本
+        result = result.replaceAll("(?m)^\\*\\*([^*\\n]{1,60})$", "$1");
         return result;
     }
 
