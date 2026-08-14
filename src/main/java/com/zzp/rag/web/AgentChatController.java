@@ -84,14 +84,17 @@ public class AgentChatController {
             AgentOrchestrator.AgentAnswer result = orchestrator.answer(conversationId, req.query());
             // 整段格式修复（与固定流水线端点一致的兜底）
             String answer = StreamTokenFixer.fixFull(result.answer());
-            // 法名引用校验：库外引用追加标注（防引用幻觉）
-            String annotation = citationGuard.validate(answer);
-            if (annotation != null) {
-                answer = answer + annotation;
+            // 法名引用校验：库外引用追加标注（防引用幻觉）；
+            // MCP 工具轮跳过——业务制度名（如《员工年休假管理办法》）不是法条引用
+            if (!result.mcpToolsUsed()) {
+                String annotation = citationGuard.validate(answer);
+                if (annotation != null) {
+                    answer = answer + annotation;
+                }
             }
             result = new AgentOrchestrator.AgentAnswer(
                     answer, result.sources(), result.route(), result.rerankDegraded(),
-                    result.graphContextChars());
+                    result.graphContextChars(), result.mcpToolsUsed());
             auditService.record(buildAuditEvent(req, result, ctx,
                     System.currentTimeMillis() - start, "SUCCESS", null));
             return ApiResponse.ok(new AgentChatResponse(
@@ -150,7 +153,7 @@ public class AgentChatController {
 
                     @Override
                     public void onComplete(String route, List<String> sources, boolean degraded,
-                                           int graphContextChars) {
+                                           int graphContextChars, boolean mcpToolsUsed) {
                         if (closed.get()) {
                             return;   // 客户端已断开，不再下发也不记审计
                         }
@@ -158,8 +161,9 @@ public class AgentChatController {
                             // 兜底句式作为唯一 token 下发
                             fullAnswer.append(AgentOrchestrator.NO_ANSWER);
                             sendSafe(emitter, closed, "token", AgentOrchestrator.NO_ANSWER);
-                        } else {
-                            // 法名引用校验：库外引用追加标注（作为末尾 token 事件下发）
+                        } else if (!mcpToolsUsed) {
+                            // 法名引用校验：库外引用追加标注（作为末尾 token 事件下发）；
+                            // MCP 工具轮跳过——业务制度名不是法条引用
                             String annotation = citationGuard.validate(fullAnswer.toString());
                             if (annotation != null) {
                                 fullAnswer.append(annotation);
@@ -173,7 +177,7 @@ public class AgentChatController {
                             auditService.record(buildAuditEvent(req,
                                     new AgentOrchestrator.AgentAnswer(
                                             fullAnswer.toString(), sources, route, degraded,
-                                            graphContextChars),
+                                            graphContextChars, mcpToolsUsed),
                                     auditCtx, System.currentTimeMillis() - start, "SUCCESS", null));
                         }
                     }

@@ -35,7 +35,7 @@ import java.util.logging.Logger;
 @Slf4j
 @Configuration
 @EnableScheduling
-@MapperScan("com.zzp.rag.mysql.mapper")
+@MapperScan({"com.zzp.rag.mysql.mapper", "com.zzp.rag.skill.mapper"})
 public class MysqlConfig {
 
     @Bean

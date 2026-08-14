@@ -1,8 +1,7 @@
 package com.zzp.rag.agent;
 
 import com.zzp.rag.retrieval.RetrievalPipeline;
-import com.zzp.rag.web.StreamTokenFixer;
-import dev.langchain4j.model.chat.ChatModel;
+import com.zzp.rag.web.StreamTokenFixer;import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +26,11 @@ public class AgentOrchestrator {
     /** 检索无结果时的确定性兜底回答（不信任 LLM 输出，见 AgentTools#isRetrievalEmpty） */
     public static final String NO_ANSWER = "根据现有资料，暂无法回答该问题";
 
+    /** 预检索未命中但存在 MCP 技能时的上下文提示（放行 Agent 工具循环，工具无果仍回兜底句式） */
+    private static final String MCP_FALLBACK_CONTEXT =
+            "文档检索未命中。你可以调用已授权的业务系统工具（如公司制度查询、员工目录）回答；"
+                    + "工具也没有结果时输出\"根据现有资料，暂无法回答该问题\"。";
+
     private final ChatModel chatModel;
     private final StreamingChatModel streamingChatModel;
     private final ChatModel reasonerModel;
@@ -34,6 +38,7 @@ public class AgentOrchestrator {
     private final AgentService agentService;
     private final AgentTools agentTools;
     private final RetrievalPipeline retrievalPipeline;
+    private final com.zzp.rag.skill.registry.SkillRegistryToolProvider skillRegistryToolProvider;
 
     /** 答案校验开关：生成后由小模型对照检索资料逐句核查，删除无依据内容（编造的最后防线） */
     @Value("${rag.agent.verify.enabled:true}")
@@ -46,7 +51,8 @@ public class AgentOrchestrator {
             @Qualifier("verifyChatModel") ChatModel contextualModel,
             AgentService agentService,
             AgentTools agentTools,
-            RetrievalPipeline retrievalPipeline) {
+            RetrievalPipeline retrievalPipeline,
+            com.zzp.rag.skill.registry.SkillRegistryToolProvider skillRegistryToolProvider) {
         this.chatModel = chatModel;
         this.streamingChatModel = streamingChatModel;
         this.reasonerModel = reasonerModel;
@@ -54,17 +60,19 @@ public class AgentOrchestrator {
         this.agentService = agentService;
         this.agentTools = agentTools;
         this.retrievalPipeline = retrievalPipeline;
+        this.skillRegistryToolProvider = skillRegistryToolProvider;
     }
 
     public record AgentAnswer(String answer, List<String> sources, String route,
-                              boolean rerankDegraded, int graphContextChars) {}
+                              boolean rerankDegraded, int graphContextChars, boolean mcpToolsUsed) {}
 
     /** 流式回调 — 控制器按此桥接 SSE 事件；onRoute 先于 onToken 同步触发 */
     public interface AgentStreamHandler {
         void onRoute(String route);
         void onToken(String token);
         void onToolExecuted(String toolName, String arguments, boolean retrievalEmpty);
-        void onComplete(String route, List<String> sources, boolean rerankDegraded, int graphContextChars);
+        void onComplete(String route, List<String> sources, boolean rerankDegraded,
+                        int graphContextChars, boolean mcpToolsUsed);
         void onError(Throwable error);
     }
 
@@ -74,28 +82,39 @@ public class AgentOrchestrator {
         String route = route(query);
         log.info("[Agent] 路由: {} → {}", query, route);
         if ("CHAT".equals(route)) {
-            return new AgentAnswer(chatDirect(query), List.of(), route, false, 0);
+            return new AgentAnswer(chatDirect(query), List.of(), route, false, 0, false);
         }
         // KNOWLEDGE_QA：确定性预检索——不依赖模型是否调用工具
-        // （咨询类问题模型常跳过工具凭自身知识作答，产生引用幻觉；预检索后检索空则直接兜底）
+        // （咨询类问题模型常跳过工具凭自身知识作答，产生引用幻觉；预检索后检索空则直接兜底。
+        //   例外：默认员工有启用 MCP 技能时放行 Agent 工具循环，让业务工具获得回答机会）
         RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(query, null);
         boolean retrievalEmpty = pre.segments().isEmpty() && pre.graphContext().isBlank();
-        if (retrievalEmpty) {
+        boolean mcpSkillsAvailable = skillRegistryToolProvider.mcpSkillsEnabled();
+        if (retrievalEmpty && !mcpSkillsAvailable) {
             log.info("[Agent] 预检索无结果，使用确定性兜底回答");
             return new AgentAnswer(NO_ANSWER, List.of(), route, pre.rerankDegraded(),
-                    pre.graphContext().length());
+                    pre.graphContext().length(), false);
         }
-        String context = retrievalPipeline.buildContext(pre, 3000);
+        String context = retrievalEmpty
+                ? MCP_FALLBACK_CONTEXT
+                : retrievalPipeline.buildContext(pre, 3000);
         // 图谱-only：文档片段全被阈值过滤、仅图谱非空（授权过宽重灾区，需收紧）
-        boolean graphOnly = pre.segments().isEmpty() && !pre.graphContext().isBlank();
+        boolean graphOnly = !retrievalEmpty && pre.segments().isEmpty() && !pre.graphContext().isBlank();
         try {
             String answer = agentService.chat(conversationId, enrich(query, context, graphOnly));
-            answer = verify(answer, context, graphOnly);
+            // MCP 工具被调用过：答案是权威业务数据，跳过知识库校验（防误删）
+            boolean mcpUsed = com.zzp.rag.mcp.McpCallTracker.consumeCalled();
+            if (mcpUsed) {
+                log.info("[Agent] 本轮使用 MCP 工具，跳过知识库校验");
+            } else {
+                answer = verify(answer, context, graphOnly);
+            }
             List<String> sources = agentTools.getSources().isEmpty()
                     ? pre.getSources() : agentTools.getSources();
             return new AgentAnswer(answer, sources, route, pre.rerankDegraded(),
-                    pre.graphContext().length());
+                    pre.graphContext().length(), mcpUsed);
         } finally {
+            com.zzp.rag.mcp.McpCallTracker.clear();
             agentTools.clear();
         }
     }
@@ -200,7 +219,7 @@ public class AgentOrchestrator {
         }
         log.info("[Agent] 确定性删除含缺失术语句子 {} 句（术语: {}）",
                 removed, String.join("、", missingTerms.stream().limit(8).toList()));
-        String result = kept.isEmpty() ? NO_ANSWER : kept.toString();
+        String result = kept.toString().isBlank() ? NO_ANSWER : kept.toString();
         return collapseEmptyHeadings(result);
     }
 
@@ -328,7 +347,7 @@ public class AgentOrchestrator {
                 @Override
                 public void onCompleteResponse(
                         dev.langchain4j.model.chat.response.ChatResponse completeResponse) {
-                    handler.onComplete(route, List.of(), false, 0);
+                    handler.onComplete(route, List.of(), false, 0, false);
                 }
 
                 @Override
@@ -338,39 +357,50 @@ public class AgentOrchestrator {
             });
             return;
         }
-        // 确定性预检索（同非流式）：检索空直接流式下发兜底句式
+        // 确定性预检索（同非流式）：检索空直接流式下发兜底句式；
+        // 例外：默认员工有启用 MCP 技能时放行 Agent 工具循环（业务工具获得回答机会）
         RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(query, null);
-        if (pre.segments().isEmpty() && pre.graphContext().isBlank()) {
+        boolean retrievalEmpty = pre.segments().isEmpty() && pre.graphContext().isBlank();
+        boolean mcpSkillsAvailable = skillRegistryToolProvider.mcpSkillsEnabled();
+        if (retrievalEmpty && !mcpSkillsAvailable) {
             log.info("[Agent] 预检索无结果，流式下发兜底句式");
             handler.onToken(NO_ANSWER);
-            handler.onComplete(route, List.of(), pre.rerankDegraded(), 0);
+            handler.onComplete(route, List.of(), pre.rerankDegraded(), 0, false);
             return;
         }
-        String context = retrievalPipeline.buildContext(pre, 3000);
-        boolean graphOnly = pre.segments().isEmpty() && !pre.graphContext().isBlank();
+        String context = retrievalEmpty ? MCP_FALLBACK_CONTEXT
+                : retrievalPipeline.buildContext(pre, 3000);
+        boolean graphOnly = !retrievalEmpty && pre.segments().isEmpty() && !pre.graphContext().isBlank();
         String enriched = enrich(query, context, graphOnly);
 
         // 工具执行回调与工具执行同线程，此处读取 ThreadLocal 状态并快照，
         // 供 onCompleteResponse（可能在其他线程）使用
         final List<String>[] sourcesHolder = (List<String>[]) new List[]{pre.getSources()};
         final boolean[] degradedHolder = {pre.rerankDegraded()};
+        final boolean[] mcpUsedHolder = {false};
         // 答案校验：服务端先收齐全文 → 对照检索资料核查 → 再下发
-        // （token 不再直通前端，换取"无依据内容不出门"的保证；工具事件仍实时透传）
+        // （token 不再直通前端，换取"无依据内容不出门"的保证；工具事件仍实时透传；
+        //   本轮用过 MCP 工具则跳过知识库校验——MCP 数据是权威业务数据非模型知识）
         StringBuffer full = new StringBuffer();
         agentService.chatStream(conversationId, enriched)
                 .onPartialResponse(full::append)
                 .onToolExecuted(req -> {
                     sourcesHolder[0] = agentTools.getSources();
                     degradedHolder[0] = agentTools.isRerankDegraded();
+                    mcpUsedHolder[0] |= com.zzp.rag.mcp.McpCallTracker.consumeCalled();
                     handler.onToolExecuted(req.request().name(), req.request().arguments(), false);
                 })
                 .onCompleteResponse(resp -> {
                     try {
+                        String finalAnswer = mcpUsedHolder[0]
+                                ? full.toString()
+                                : verify(full.toString(), context, graphOnly);
                         // fixFull 与固定流水线/非流式端点保持一致（### 子标题 → 加粗、- 列表 → 有序）
-                        emitChunks(StreamTokenFixer.fixFull(verify(full.toString(), context, graphOnly)), handler);
+                        emitChunks(StreamTokenFixer.fixFull(finalAnswer), handler);
                         handler.onComplete(route, sourcesHolder[0], degradedHolder[0],
-                                pre.graphContext().length());
+                                pre.graphContext().length(), mcpUsedHolder[0]);
                     } finally {
+                        com.zzp.rag.mcp.McpCallTracker.clear();
                         agentTools.clear();
                     }
                 })
@@ -378,6 +408,7 @@ public class AgentOrchestrator {
                     try {
                         handler.onError(err);
                     } finally {
+                        com.zzp.rag.mcp.McpCallTracker.clear();
                         agentTools.clear();
                     }
                 })

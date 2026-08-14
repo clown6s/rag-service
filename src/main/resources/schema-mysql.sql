@@ -41,3 +41,32 @@ CREATE TABLE IF NOT EXISTS digital_employee (
   updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数字员工配置（阶段4接入运行时）';
+
+
+-- ============================================================
+-- 阶段3：技能注册中心
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS skill (
+  id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  code          VARCHAR(64)   NOT NULL COMMENT '技能编码，全局唯一（builtin_search_kb / builtin_entity_graph / demo_mcp）',
+  name          VARCHAR(128)  NOT NULL COMMENT '技能名称（管理端展示）',
+  description   VARCHAR(1000) NULL COMMENT '技能说明',
+  skill_md      MEDIUMTEXT    NULL COMMENT 'SKILL.md 内容（本阶段存 DB 字段，不做文件上传）',
+  tool_type     VARCHAR(16)   NOT NULL COMMENT 'builtin | mcp',
+  mcp_config    JSON          NULL COMMENT 'MCP 连接配置，仅 tool_type=mcp 使用：{baseUrl,sseEndpoint,requestTimeoutSeconds,initializationTimeoutSeconds,enabled,retryCooldownSeconds}',
+  tool_names    VARCHAR(1000) NULL COMMENT '暴露给 LLM 的工具名白名单，逗号分隔；NULL/空=该 MCP 全部工具',
+  status        TINYINT(1)    NOT NULL DEFAULT 1 COMMENT '1启用 0停用（注册中心级开关，停用=整体不装配）',
+  created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_code (code),
+  KEY idx_tool_type (tool_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='技能注册中心';
+
+CREATE TABLE IF NOT EXISTS skill_employee (
+  employee_id BIGINT UNSIGNED NOT NULL COMMENT '数字员工 id',
+  skill_id    BIGINT UNSIGNED NOT NULL COMMENT '技能 id',
+  created_at  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (employee_id, skill_id),
+  KEY idx_skill_id (skill_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数字员工-技能授权';

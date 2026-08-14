@@ -18,6 +18,7 @@ import java.sql.Statement;
  */
 @Slf4j
 @Component
+@org.springframework.core.annotation.Order(10)   // 先于 SkillSeeder(@Order(20)) 建表
 public class MysqlSchemaInitializer implements ApplicationRunner {
 
     private final DataSource dataSource;
@@ -51,11 +52,17 @@ public class MysqlSchemaInitializer implements ApplicationRunner {
                     .getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
                 for (String part : sql.split(";")) {
-                    if (part == null || part.isBlank() || part.strip().startsWith("--")) {
+                    // 逐行剥离 -- 注释（历史坑：整段按 startsWith("--") 跳过会把
+                    // 注释块开头的 CREATE 语句一起丢掉，skill 表因此漏建）
+                    String cleaned = part.lines()
+                            .filter(line -> !line.strip().startsWith("--"))
+                            .collect(java.util.stream.Collectors.joining("\n"))
+                            .strip();
+                    if (cleaned.isEmpty()) {
                         continue;
                     }
                     try {
-                        stmt.execute(part);
+                        stmt.execute(cleaned);
                     } catch (Exception e) {
                         // 单条失败不中断（一张表失败不影响另一张），只告警
                         log.warn("[MySQL] 建表语句执行失败: {}", e.getMessage());

@@ -25,7 +25,7 @@ public class AgentConfig {
     public AgentService agentService(
             @Qualifier("chatModel") ChatModel chatModel,
             @Qualifier("streamingChatModel") StreamingChatModel streamingChatModel,
-            AgentTools agentTools,
+            com.zzp.rag.skill.registry.SkillRegistryToolProvider skillRegistryToolProvider,
             ObjectProvider<ChatMemoryStore> chatMemoryStoreProvider,
             @Value("${rag.agent.max-sequential-tool-invocations:5}") int maxToolInvocations,
             @Value("${rag.agent.memory-max-messages:12}") int memoryMaxMessages) {
@@ -33,7 +33,7 @@ public class AgentConfig {
         return AiServices.builder(AgentService.class)
                 .chatModel(chatModel)
                 .streamingChatModel(streamingChatModel)
-                .tools(agentTools)
+                .toolProvider(skillRegistryToolProvider)
                 .chatMemoryProvider(memoryId -> {
                     var builder = MessageWindowChatMemory.builder()
                             .id(memoryId)

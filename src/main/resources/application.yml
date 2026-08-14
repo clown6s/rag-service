@@ -154,6 +154,11 @@ rag:
     password: ${MYSQL_ROOT_PASSWORD:}
     audit-aggregate-interval-ms: 10000   # 审计 JSONL → MySQL 聚合周期
     audit-rescan-days: 3                 # 重启后重扫最近 N 天 JSONL（幂等补漏）
+  skill:
+    default-employee-id: 0              # 默认数字员工 id（0=自动取最小启用员工；ToolProvider 装配授权快照用）
+  mcp:
+    demo:
+      enabled: true                     # 内置演示 MCP 服务（阶段3 试点，/mcp/demo/sse）
   upload:
     max-file-size: 20MB
     allowed-types: pdf,docx,doc,md,txt,html

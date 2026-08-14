@@ -95,8 +95,10 @@ OpenAI 兼容。协议层已统一，网关接入零适配。
 ```
 
 - **注册中心**：上传、版本化、按数字员工授权（技能可见范围 = 岗位）、热加载
-- **现状迁移**：从 rag-service 的 `@Tool` 工具开始收敛到技能包格式；
-  参考案例（cb 的 XSkill，14 技能 + 工厂）证明该格式可行，其被注释的 DAG 是"编排做重"的反例
+- **现状迁移（2026-08-14）**：注册中心已落地——skill/skill_employee 表 + 管理 API + 前端技能管理页；
+  存量 @Tool（知识库检索/图谱查询）收敛为内置技能（永远装配的平台底座）；
+  MCP 技能经 SkillRegistryToolProvider 按默认员工授权动态装配；
+  文件上传热加载留待阶段 4（SKILL.md 内容暂存 DB 字段）
 - **扩展收益**：新技能 = 上传技能包 + 授权，核心代码零改动
 
 ### 3.3 MCP 连接器（业务系统的扩展点）
@@ -104,7 +106,8 @@ OpenAI 兼容。协议层已统一，网关接入零适配。
 - **MCP 为唯一连接器标准**：每个业务系统出一个 MCP server（内部小服务，Java/Python 均可），
   平台侧统一 MCP client 汇聚，统一鉴权、统一审计
 - **规则**：新业务能力默认做成 MCP server，**不再新增 Maven 模块**（参考案例 cb 的 31 模块耦合教训）
-- **客户端**：LangChain4j MCP client，协议对齐 OpenAI 兼容
+- **客户端**：官方 Java MCP SDK（io.modelcontextprotocol 0.10.0）+ 自研 ToolProvider 桥接
+  （langchain4j-mcp 模块未离线可用；桥接 ≈100 行：listTools→ToolSpecification、callTool→ToolExecutor）
 
 ### 3.4 编排三层（流程的扩展点）
 
@@ -153,7 +156,7 @@ OpenAI 兼容。协议层已统一，网关接入零适配。
 |---|---|---|---|
 | 1 | rag-service agent 化（R1 路由 + 状态机 + 工具）+ ai-sidecar | 知识数字员工最小闭环 | ✅ 完成（非流式 + SSE 流式，route/tool 事件透传） |
 | 2 | 审计聚合/用量 + 业务库引入 + 直连 vLLM/DeepSeek；网关按需引入 | 可审计、可切换 | ✅ 业务库+聚合入库+看板已落地（数字员工配置存储层同步落地，运行时绑定留阶段 4） |
-| 3 | 技能规范落地（注册中心 + 存量 @Tool 收敛）+ MCP 试点接一个业务系统 | 能力可插拔 | 待启动 |
+| 3 | 技能规范落地（注册中心 + 存量 @Tool 收敛）+ MCP 试点接一个业务系统 | 能力可插拔 | ✅ 注册中心+授权+动态装配已落地（内置演示 MCP 服务 /mcp/demo/sse 作为业务系统接入模板；真实业务系统接入待试点） |
 | 4 | 数字员工生命周期（配置→发布→运行→治理）+ 管理后台 | 平台化成型 | 待启动 |
 | 5 | 多数字员工协作 + 上下文飞轮（答案回流知识库） | 超级团队 | 待启动 |
 
@@ -176,7 +179,7 @@ OpenAI 兼容。协议层已统一，网关接入零适配。
 | 模型网关 | New-API（备选 One-API），按需启用 | OpenAI 兼容，内网自建 |
 | 模型服务 | vLLM + Qwen（私有底座 8686） | OpenAI 兼容 API，Java 直连 HTTP |
 | AI 边车 | Python 3.11 / FastAPI / PyMuPDF / sentence-transformers / Ragas | ai-sidecar（独立仓库）：/rerank（双通道降级）、/parse（PDF 解析，DeepDoc 视觉任务待部署） |
-| 连接器 | MCP（LangChain4j MCP client） | 业务系统接入唯一标准 |
+| 连接器 | 官方 Java MCP SDK 0.10.0 + 自研 ToolProvider 桥接 | 业务系统接入唯一标准 |
 | 会话 | Redis + ChatMemory（待引入） | 跨数字员工共享 |
 | 异步 | 自研队列（审计已用）；RocketMQ 按需引入 | 评测、批量任务 |
 
