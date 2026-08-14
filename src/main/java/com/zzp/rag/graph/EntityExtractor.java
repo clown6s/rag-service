@@ -45,11 +45,12 @@ public class EntityExtractor {
                 lastJson = cleanJson(response);
                 GraphData data = gson.fromJson(lastJson, GraphData.class);
                 if (data != null && data.entities() != null && !data.entities().isEmpty()) {
+                    GraphData filtered = filterNoise(data);
                     log.debug("[实体抽取] docId={} chunk={} entities={} relations={}",
                             docId, chunkIndex,
-                            data.entities().size(),
-                            data.relations() != null ? data.relations().size() : 0);
-                    return data;
+                            filtered.entities().size(),
+                            filtered.relations() != null ? filtered.relations().size() : 0);
+                    return filtered;
                 }
                 if (attempt < maxAttempts) {
                     log.info("[实体抽取] 空结果重试 {}/{} docId={} chunk={}",
@@ -61,7 +62,7 @@ public class EntityExtractor {
                     // 抢救成功只打 INFO（不再告警），真正丢失才 WARN
                     GraphData salvaged = salvage(lastJson, docId, chunkIndex);
                     if (!salvaged.entities().isEmpty()) {
-                        return salvaged;
+                        return filterNoise(salvaged);
                     }
                     log.warn("[实体抽取] 失败 docId={} chunk={}: {}", docId, chunkIndex, e.getMessage());
                     return GraphData.empty();
@@ -165,5 +166,37 @@ public class EntityExtractor {
 
         public record Entity(String name, String type) {}
         public record Relation(String subject, String relation, String object) {}
+    }
+
+    /**
+     * 噪音实体过滤：文档名（*.doc 等）与泛化名词进图只会产生
+     * "红旗渠 与...同属 导游面试问答.doc" 这类垃圾关系（三轮图谱垃圾实况的根源：
+     * 红旗渠三元组直灌、焦裕禄"涵盖导游面试问答.doc"散文化噪音）。
+     * 规则：单字实体剔除；文档名剔除；泛化名词词表剔除；孤儿关系随实体剔除。
+     */
+    private static final java.util.regex.Pattern NOISE_ENTITY = java.util.regex.Pattern.compile(
+            "(?i).*\\.(docx?|pdf|txt|md|html)$"
+                    + "|^(景点|地点|中国|文物古迹|历史背景|景点知识|风景名胜|旅游者|巨型算盘"
+                    + "|美食|特产|门票|路线|年代|人物|故事|传说|建筑|建筑特点|文化|历史|精神)$");
+
+    private GraphData filterNoise(GraphData data) {
+        List<GraphData.Entity> kept = data.entities().stream()
+                .filter(e -> e.name() != null && !e.name().isBlank()
+                        && e.name().length() >= 2
+                        && !NOISE_ENTITY.matcher(e.name()).matches())
+                .toList();
+        if (kept.size() == data.entities().size()) {
+            return data;
+        }
+        java.util.Set<String> names = kept.stream().map(GraphData.Entity::name)
+                .collect(java.util.stream.Collectors.toSet());
+        List<GraphData.Relation> rels = data.relations() == null ? List.of()
+                : data.relations().stream()
+                .filter(r -> names.contains(r.subject()) && names.contains(r.object()))
+                .toList();
+        log.info("[实体抽取] 噪音过滤: 实体 {}→{} 关系 {}→{}",
+                data.entities().size(), kept.size(),
+                data.relations() != null ? data.relations().size() : 0, rels.size());
+        return new GraphData(kept, rels);
     }
 }
