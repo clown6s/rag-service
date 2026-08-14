@@ -32,6 +32,7 @@ public class McpServerHandle {
     private final ObjectMapper objectMapper;
 
     private volatile McpSyncClient client;
+    private volatile HttpClientSseClientTransport transport;
     private volatile Map<String, McpSchema.Tool> tools = Map.of();
     private final AtomicBoolean healthy = new AtomicBoolean(false);
     private volatile long lastAttemptAt = 0;
@@ -90,11 +91,11 @@ public class McpServerHandle {
         }
         lastAttemptAt = now;
         try {
-            HttpClientSseClientTransport transport =
+            HttpClientSseClientTransport newTransport =
                     new HttpClientSseClientTransport.Builder(baseUrl)
                             .sseEndpoint(sseEndpoint)
                             .build();
-            McpSyncClient newClient = McpClient.sync(transport)
+            McpSyncClient newClient = McpClient.sync(newTransport)
                     .requestTimeout(requestTimeout)
                     .initializationTimeout(initializationTimeout)
                     .clientInfo(new McpSchema.Implementation("rag-service", "1.0.0"))
@@ -104,6 +105,7 @@ public class McpServerHandle {
             for (McpSchema.Tool t : newClient.listTools().tools()) {
                 loaded.put(t.name(), t);
             }
+            this.transport = newTransport;
             this.client = newClient;
             this.tools = Map.copyOf(loaded);
             healthy.set(true);
@@ -143,6 +145,15 @@ public class McpServerHandle {
         try {
             if (client != null) {
                 client.closeGracefully();
+            }
+        } catch (Exception ignored) {
+            // 关闭失败无碍
+        }
+        try {
+            if (transport != null) {
+                // 关键：销毁传输层，否则 SSE 订阅在后台无限重连（历史坑：句柄已失效仍周期性
+                // 打 ConnectException ERROR 噪声）
+                transport.close();
             }
         } catch (Exception ignored) {
             // 关闭失败无碍

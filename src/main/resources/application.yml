@@ -4,6 +4,7 @@ server:
 logging:
   level:
     org.redisson: WARN                 # Redisson 默认 INFO 日志太吵
+    io.modelcontextprotocol: OFF       # MCP SDK 内部重连噪声；故障由自有 McpServerHandle 日志呈现
 
 spring:
   application:
