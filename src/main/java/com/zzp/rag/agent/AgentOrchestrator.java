@@ -329,7 +329,11 @@ public class AgentOrchestrator {
         return List.copyOf(missing);
     }
 
-    /** 校验后的答案按块下发，保持流式观感（按 code point 切，避免拆散 emoji 代理对） */
+    /**
+     * 校验后的答案按块下发，保持流式观感：
+     * 按 code point 切块（避免拆散 emoji 代理对）+ 块间节流
+     * （校验后全文已就绪，无节流会瞬间发完，客户端渲染成"一次性出现"）。
+     */
     private void emitChunks(String text, AgentStreamHandler handler) {
         int i = 0;
         int n = text.length();
@@ -337,6 +341,12 @@ public class AgentOrchestrator {
             int end = text.offsetByCodePoints(i, Math.min(24, text.codePointCount(i, n)));
             handler.onToken(text.substring(i, end));
             i = end;
+            try {
+                Thread.sleep(40);   // 回放节奏 ≈ 600 字/秒，接近真实生成速度
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 
