@@ -276,8 +276,11 @@ public class FeishuChatBridge {
                 "label", java.util.Map.of("tag", "plain_text", "content", "标题"),
                 "placeholder", java.util.Map.of("tag", "plain_text",
                         "content", "如：关于五一假期安排的通知")));
-        elements.add(java.util.Map.of("tag", "textarea",
+        elements.add(java.util.Map.of("tag", "input",
                 "name", "points",
+                "input_type", "multiline_text",   // 多行输入框：tag 必须是 input（textarea 会被飞书拒 11310）
+                "rows", 4,
+                "auto_resize", true,
                 "label", java.util.Map.of("tag", "plain_text", "content", "内容要点"),
                 "placeholder", java.util.Map.of("tag", "plain_text",
                         "content", "每行一条要点；可引用知识库文档，如「参考《员工年休假管理办法》」")));
