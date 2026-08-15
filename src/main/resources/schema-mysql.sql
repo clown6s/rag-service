@@ -138,3 +138,18 @@ CREATE TABLE IF NOT EXISTS sop (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_code (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='SOP 流程定义（后台可视化配置）';
+
+
+-- 答案审核流：高风险问题答案先审后发（PENDING/APPROVED/REJECTED）
+CREATE TABLE IF NOT EXISTS answer_review (
+  id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+  query       VARCHAR(512) NOT NULL,
+  answer      TEXT NOT NULL,
+  sources     VARCHAR(1024) NULL,
+  employee_id BIGINT NULL,
+  `user`      VARCHAR(64) NULL,
+  status      VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  reviewer    VARCHAR(64) NULL,
+  reviewed_at DATETIME NULL,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答案审核流';

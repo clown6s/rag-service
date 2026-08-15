@@ -26,6 +26,10 @@ public class AgentOrchestrator {
     /** 检索无结果时的确定性兜底回答（不信任 LLM 输出，见 AgentTools#isRetrievalEmpty） */
     public static final String NO_ANSWER = "根据现有资料，暂无法回答该问题";
 
+    /** 审核流拦截提示（高风险合规问题，答案先审后发） */
+    public static final String REVIEW_HOLD_MESSAGE =
+            "该问题涉及敏感合规内容，答案已转人工审核；审核结论出来后请重新提问查看。";
+
     /** 预检索未命中但存在 MCP 技能时的上下文提示（放行 Agent 工具循环，工具无果仍回兜底句式） */
     private static final String MCP_FALLBACK_CONTEXT =
             "文档检索未命中。你可以调用已授权的业务系统工具（如公司制度查询、员工目录）回答；"
@@ -37,6 +41,7 @@ public class AgentOrchestrator {
     private final ChatModel contextualModel;
     private final ChatModel turboModel;   // 轻量小模型：闲聊/追问澄清分级（省钱省延迟）
     private final com.zzp.rag.web.UsageTracker usageTracker;
+    private final com.zzp.rag.mysql.service.ReviewService reviewService;
     private final AgentService agentService;
     private final AgentTools agentTools;
     private final RetrievalPipeline retrievalPipeline;
@@ -56,6 +61,7 @@ public class AgentOrchestrator {
             @Qualifier("verifyChatModel") ChatModel contextualModel,
             @Qualifier("contextualChatModel") ChatModel turboModel,
             com.zzp.rag.web.UsageTracker usageTracker,
+            com.zzp.rag.mysql.service.ReviewService reviewService,
             AgentService agentService,
             AgentTools agentTools,
             RetrievalPipeline retrievalPipeline,
@@ -69,6 +75,7 @@ public class AgentOrchestrator {
         this.contextualModel = contextualModel;
         this.turboModel = turboModel;
         this.usageTracker = usageTracker;
+        this.reviewService = reviewService;
         this.agentService = agentService;
         this.agentTools = agentTools;
         this.retrievalPipeline = retrievalPipeline;
@@ -168,6 +175,15 @@ public class AgentOrchestrator {
             }
             List<String> sources = agentTools.getSources().isEmpty()
                     ? pre.getSources() : agentTools.getSources();
+            // 审核流门禁：高风险问题（合规敏感词）答案转人工审核，不直接下发
+            if (reviewService.isRisky(query) && reviewService.submit(query, answer, sources,
+                    runtime != null ? runtime.employeeId() : null,
+                    com.zzp.rag.audit.AuditEvent.AuditContext.capture().user())) {
+                log.info("[审核] 高风险问题拦截 query={}", query);
+                return new AgentAnswer(REVIEW_HOLD_MESSAGE, List.of(), route,
+                        pre.rerankDegraded(), pre.graphContext().length(), mcpUsed,
+                        runtime != null ? runtime.employeeId() : 0);
+            }
             return new AgentAnswer(answer, sources, route, pre.rerankDegraded(),
                     pre.graphContext().length(), mcpUsed,
                     runtime != null ? runtime.employeeId() : 0);
