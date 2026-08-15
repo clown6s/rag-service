@@ -128,8 +128,11 @@ public class FeishuClient {
             if (token == null) {
                 return false;
             }
-            String body = "{\"receive_id\":\"" + escapeJson(chatId)
-                    + "\",\"msg_type\":\"interactive\",\"content\":\"" + escapeJson(cardJson) + "\"}";
+            // ObjectMapper 序列化嵌套字符串：换行/引号/反斜杠全部正确转义（手工拼接会产出非法 JSON）
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "receive_id", chatId,
+                    "msg_type", "interactive",
+                    "content", cardJson));
             HttpRequest req = HttpRequest.newBuilder(URI.create(
                             config.baseUrl() + "/open-apis/im/v1/messages?receive_id_type=chat_id"))
                     .timeout(Duration.ofSeconds(15))
@@ -156,7 +159,9 @@ public class FeishuClient {
             if (token == null) {
                 return false;
             }
-            String body = "{\"msg_type\":\"interactive\",\"content\":\"" + escapeJson(cardJson) + "\"}";
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "msg_type", "interactive",
+                    "content", cardJson));
             HttpRequest req = HttpRequest.newBuilder(URI.create(config.baseUrl() + path))
                     .timeout(Duration.ofSeconds(15))
                     .header("Content-Type", "application/json")
@@ -176,10 +181,6 @@ public class FeishuClient {
             log.warn("[飞书] 卡片{}异常: {}", patch ? "更新" : "回复", e.getMessage());
             return false;
         }
-    }
-
-    private String escapeJson(String s) {
-        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private String truncate(String s, int max) {

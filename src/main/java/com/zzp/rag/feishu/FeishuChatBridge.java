@@ -111,7 +111,11 @@ public class FeishuChatBridge {
             String markdown = StreamTokenFixer.fixFull(answer.answer());
             boolean replied;
             if (config.cardMode()) {
-                replied = client.replyCard(messageId, buildCard(query, markdown, answer.sources(), chatId));
+                String card = buildCard(query, markdown, answer.sources(), chatId);
+                replied = card != null && client.replyCard(messageId, card);
+                if (!replied) {
+                    replied = client.replyMessage(messageId, toFeishuText(markdown));   // 卡片失败回退纯文本
+                }
             } else {
                 replied = client.replyMessage(messageId, toFeishuText(markdown));
             }
@@ -145,25 +149,49 @@ public class FeishuChatBridge {
     /**
      * 构建回答卡片（交互卡片：markdown 渲染正文 + 来源 note + 反馈按钮）。
      * 按钮 value 带动作上下文（重新生成需要原问题与群 ID）。
+     * 用 ObjectMapper 序列化——手工拼接遇换行/引号会产出非法 JSON（飞书 400）。
      */
     private String buildCard(String query, String markdown, List<String> sources, String chatId) {
         String md = markdown.length() > 6000
                 ? markdown.substring(0, 6000) + "\n\n…（内容过长已截断，完整内容请在 Web 端查看）"
                 : markdown;
         String sourceNote = sources.isEmpty() ? "无来源" : String.join("、", sources);
-        String valueRegen = "{\"action\":\"regenerate\",\"query\":\""
-                + escapeJson(query) + "\",\"chatId\":\"" + escapeJson(chatId) + "\"}";
-        return "{\"config\":{\"wide_screen_mode\":true},"
-                + "\"header\":{\"title\":{\"tag\":\"plain_text\",\"content\":\"🤖 数字员工回答\"},\"template\":\"blue\"},"
-                + "\"elements\":["
-                + "{\"tag\":\"markdown\",\"content\":\"" + escapeJson(md) + "\"},"
-                + "{\"tag\":\"hr\"},"
-                + "{\"tag\":\"note\",\"elements\":[{\"tag\":\"plain_text\",\"content\":\"📄 来源：" + escapeJson(sourceNote) + "\"}]},"
-                + "{\"tag\":\"action\",\"actions\":["
-                + "{\"tag\":\"button\",\"text\":{\"tag\":\"plain_text\",\"content\":\"👍 有帮助\"},\"type\":\"primary\",\"value\":{\"action\":\"helpful\"}},"
-                + "{\"tag\":\"button\",\"text\":{\"tag\":\"plain_text\",\"content\":\"👎 无帮助\"},\"type\":\"default\",\"value\":{\"action\":\"unhelpful\"}},"
-                + "{\"tag\":\"button\",\"text\":{\"tag\":\"plain_text\",\"content\":\"🔄 重新生成\"},\"type\":\"default\",\"value\":" + valueRegen + "}"
-                + "]}]}";
+
+        java.util.Map<String, Object> regenValue = new java.util.LinkedHashMap<>();
+        regenValue.put("action", "regenerate");
+        regenValue.put("query", query);
+        regenValue.put("chatId", chatId);
+
+        java.util.Map<String, Object> card = new java.util.LinkedHashMap<>();
+        card.put("config", java.util.Map.of("wide_screen_mode", true));
+        card.put("header", java.util.Map.of(
+                "title", java.util.Map.of("tag", "plain_text", "content", "🤖 数字员工回答"),
+                "template", "blue"));
+        card.put("elements", java.util.List.of(
+                java.util.Map.of("tag", "markdown", "content", md),
+                java.util.Map.of("tag", "hr"),
+                java.util.Map.of("tag", "note", "elements",
+                        java.util.List.of(java.util.Map.of("tag", "plain_text",
+                                "content", "📄 来源：" + sourceNote))),
+                java.util.Map.of("tag", "action", "actions", java.util.List.of(
+                        java.util.Map.of("tag", "button",
+                                "text", java.util.Map.of("tag", "plain_text", "content", "👍 有帮助"),
+                                "type", "primary",
+                                "value", java.util.Map.of("action", "helpful")),
+                        java.util.Map.of("tag", "button",
+                                "text", java.util.Map.of("tag", "plain_text", "content", "👎 无帮助"),
+                                "type", "default",
+                                "value", java.util.Map.of("action", "unhelpful")),
+                        java.util.Map.of("tag", "button",
+                                "text", java.util.Map.of("tag", "plain_text", "content", "🔄 重新生成"),
+                                "type", "default",
+                                "value", regenValue)))));
+        try {
+            return objectMapper.writeValueAsString(card);
+        } catch (Exception e) {
+            log.error("[飞书] 卡片构建失败（回退纯文本）: {}", e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -196,14 +224,13 @@ public class FeishuChatBridge {
                 Long agentId = config.defaultAgentId() > 0 ? config.defaultAgentId() : null;
                 AgentOrchestrator.AgentAnswer answer = orchestrator.answer(chatId, query, agentId);
                 String markdown = StreamTokenFixer.fixFull(answer.answer());
-                client.updateCard(openMessageId, buildCard(query, markdown, answer.sources(), openChatId));
+                String card = buildCard(query, markdown, answer.sources(), openChatId);
+                if (card == null || !client.updateCard(openMessageId, card)) {
+                    client.replyMessage(openMessageId, toFeishuText(markdown));   // 更新失败回退纯文本
+                }
             }
             default -> log.warn("[飞书] 未知卡片动作: {}", action);
         }
-    }
-
-    private String escapeJson(String s) {
-        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     /** 提取文本并剥掉 @机器人 提及（文本消息里 @ 以 @_user_1 形式出现） */
