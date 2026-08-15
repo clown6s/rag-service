@@ -115,9 +115,24 @@ public class FeishuChatBridge {
             if (docWizardService.willGenerateSlow(wizardKey, query)) {
                 client.replyMessage(messageId, "收到，正在生成文档，约需半分钟…");
             }
-            // 数字员工对话：conversationId=chat_id（按群隔离记忆）；agentId 默认绑定
+            // 数字员工对话：conversationId=chat_id（按群隔离记忆）；agentId 默认绑定。
+            // 先把 open_id 写入 MDC：编排器里的向导 key 用 capture().user()，
+            // 与下方 takePending 的 key 必须一致（历史坑：工作线程 MDC 为空导致文件漏发）
+            String prevMdcUser = org.slf4j.MDC.get(AuditEvent.MDC_USER_KEY);
+            if (auditUser != null) {
+                org.slf4j.MDC.put(AuditEvent.MDC_USER_KEY, auditUser);
+            }
             Long agentId = config.defaultAgentId() > 0 ? config.defaultAgentId() : null;
-            AgentOrchestrator.AgentAnswer answer = orchestrator.answer(chatId, query, agentId);
+            AgentOrchestrator.AgentAnswer answer;
+            try {
+                answer = orchestrator.answer(chatId, query, agentId);
+            } finally {
+                if (prevMdcUser != null) {
+                    org.slf4j.MDC.put(AuditEvent.MDC_USER_KEY, prevMdcUser);
+                } else {
+                    org.slf4j.MDC.remove(AuditEvent.MDC_USER_KEY);
+                }
+            }
             String markdown = StreamTokenFixer.fixFull(answer.answer());
             // 定稿文件推送（上传素材 + 发文件消息）
             com.zzp.rag.agent.DocWizardService.Pending pending =
