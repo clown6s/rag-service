@@ -55,7 +55,8 @@ public class AuditQueryService {
     public record NameCount(String name, int count, long avgMs) {}
 
     public record DashboardStats(List<DailyPoint> trend, List<NameCount> topQueries,
-                                 List<NameCount> routes, List<NameCount> employees) {}
+                                 List<NameCount> routes, List<NameCount> employees,
+                                 List<NameCount> depts) {}
 
     /** 近 N 天看板聚合（趋势/热门问题/路由分布/员工活跃度 + 采纳量并入趋势曲线） */
     public DashboardStats dashboard(int days) {
@@ -88,7 +89,10 @@ public class AuditQueryService {
                     .map(m -> new NameCount(str(m.get("user_name")), (int) num(m.get("cnt")),
                             num(m.get("avg_ms"))))
                     .toList();
-            return new DashboardStats(trend, topQueries, routes, employees);
+            List<NameCount> depts = mapper.deptDistribution(safeDays).stream()
+                    .map(m -> new NameCount(str(m.get("dept")), (int) num(m.get("cnt")), 0))
+                    .toList();
+            return new DashboardStats(trend, topQueries, routes, employees, depts);
         } catch (Exception e) {
             status.markUnavailable(e.getMessage());
             log.warn("[审计查询] 看板统计失败，降级: {}", e.getMessage());

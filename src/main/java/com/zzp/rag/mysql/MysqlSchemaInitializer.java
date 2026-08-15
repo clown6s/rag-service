@@ -41,6 +41,19 @@ public class MysqlSchemaInitializer implements ApplicationRunner {
         ensureSchema();
     }
 
+    /** 存量 digital_employee 表补 dept 列（部门级租户隔离；幂等：存在即跳过） */
+    private void migrateDigitalEmployeeDept() {
+        try (Connection conn = dataSource.getConnection(); Statement stmt = conn.createStatement()) {
+            var rs = conn.getMetaData().getColumns(null, null, "digital_employee", "dept");
+            if (!rs.next()) {
+                stmt.execute("ALTER TABLE digital_employee ADD COLUMN dept VARCHAR(64) NULL COMMENT '所属部门（部门级隔离；NULL=全公司）'");
+                log.info("[MySQL] digital_employee 已补 dept 列");
+            }
+        } catch (Exception e) {
+            log.warn("[MySQL] dept 列迁移失败（忽略，dept 功能降级）: {}", e.getMessage());
+        }
+    }
+
     /**
      * 幂等建表（CREATE TABLE IF NOT EXISTS）。
      * 启动时执行一次；聚合器探针恢复可用性后也会补调（启动时 MySQL 不在线的场景）。
@@ -69,6 +82,7 @@ public class MysqlSchemaInitializer implements ApplicationRunner {
                     }
                 }
             }
+            migrateDigitalEmployeeDept();   // 存量表补列（CREATE TABLE IF NOT EXISTS 不覆盖旧表）
             log.info("[MySQL] 建表检查完成（audit_event / digital_employee）");
             return true;
         } catch (Exception e) {

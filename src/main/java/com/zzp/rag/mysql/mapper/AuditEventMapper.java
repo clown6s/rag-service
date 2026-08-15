@@ -139,4 +139,15 @@ public interface AuditEventMapper extends BaseMapper<AuditEventEntity> {
             LIMIT 300
             """)
     List<Map<String, Object>> unansweredQueries(@Param("days") int days);
+
+    /** 近 N 天部门问答分布（audit_event.employee_id → digital_employee.dept；NULL 部门归"全公司"） */
+    @Select("""
+            SELECT COALESCE(d.dept, '全公司') AS dept, COUNT(*) AS cnt
+            FROM audit_event a
+            LEFT JOIN digital_employee d ON d.id = a.employee_id
+            WHERE a.created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)
+            GROUP BY COALESCE(d.dept, '全公司')
+            ORDER BY cnt DESC
+            """)
+    List<Map<String, Object>> deptDistribution(@Param("days") int days);
 }

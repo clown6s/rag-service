@@ -22,7 +22,8 @@ public class EmployeeController {
     }
 
     public record EmployeeRequest(String name, String avatar, String description,
-                                  String systemPrompt, String knowledgeScope, Boolean status) {}
+                                  String systemPrompt, String knowledgeScope, Boolean status,
+                                  String dept) {}
 
     @GetMapping
     public ApiResponse<java.util.List<DigitalEmployeeService.EmployeeView>> list() {
@@ -42,14 +43,14 @@ public class EmployeeController {
     @PostMapping
     public ApiResponse<DigitalEmployeeService.EmployeeView> create(@RequestBody EmployeeRequest req) {
         return doWrite(() -> employeeService.create(req.name(), req.avatar(), req.description(),
-                req.systemPrompt(), req.knowledgeScope(), req.status()));
+                req.systemPrompt(), req.knowledgeScope(), req.status(), req.dept()));
     }
 
     @PutMapping("/{id}")
     public ApiResponse<DigitalEmployeeService.EmployeeView> update(@PathVariable long id,
                                                                    @RequestBody EmployeeRequest req) {
         return doWrite(() -> employeeService.update(id, req.name(), req.avatar(), req.description(),
-                req.systemPrompt(), req.knowledgeScope(), req.status()));
+                req.systemPrompt(), req.knowledgeScope(), req.status(), req.dept()));
     }
 
     /** 生命周期流转（治理状态机：DRAFT/TESTING/ONLINE/OFFLINE；运行时仅 ONLINE/TESTING 可用） */

@@ -37,7 +37,7 @@ public class DigitalEmployeeService {
 
     public record EmployeeView(long id, String name, String avatar, String description,
                                String systemPrompt, String knowledgeScope, int status,
-                               String lifecycle,
+                               String lifecycle, String dept,
                                String createdAt, String updatedAt) {}
 
     public List<EmployeeView> list() {
@@ -70,7 +70,8 @@ public class DigitalEmployeeService {
     }
 
     public EmployeeView create(String name, String avatar, String description,
-                               String systemPrompt, String knowledgeScope, Boolean statusFlag) {
+                               String systemPrompt, String knowledgeScope, Boolean statusFlag,
+                               String dept) {
         if (!status.isAvailable()) {
             return null;
         }
@@ -84,6 +85,7 @@ public class DigitalEmployeeService {
             entity.setSystemPrompt(systemPrompt);
             entity.setKnowledgeScope(normalizeScope(knowledgeScope));
             entity.setLifecycle("ONLINE");
+            entity.setDept(dept == null || dept.isBlank() ? null : dept.strip());
             entity.setStatus(Boolean.FALSE.equals(statusFlag) ? 0 : 1);
             mapper.insert(entity);
             log.info("[数字员工] 创建 id={} name={}", entity.getId(), entity.getName());
@@ -98,7 +100,8 @@ public class DigitalEmployeeService {
     }
 
     public EmployeeView update(long id, String name, String avatar, String description,
-                               String systemPrompt, String knowledgeScope, Boolean statusFlag) {
+                               String systemPrompt, String knowledgeScope, Boolean statusFlag,
+                               String dept) {
         if (!status.isAvailable()) {
             return null;
         }
@@ -116,6 +119,7 @@ public class DigitalEmployeeService {
             entity.setDescription(description);
             entity.setSystemPrompt(systemPrompt);
             entity.setKnowledgeScope(normalizeScope(knowledgeScope));
+            entity.setDept(dept == null || dept.isBlank() ? null : dept.strip());
             if (statusFlag != null) {
                 entity.setStatus(statusFlag ? 1 : 0);
             }
@@ -221,6 +225,7 @@ public class DigitalEmployeeService {
                 e.getId(), e.getName(), e.getAvatar(), e.getDescription(), e.getSystemPrompt(),
                 e.getKnowledgeScope(), e.getStatus() != null ? e.getStatus() : 0,
                 e.getLifecycle() != null ? e.getLifecycle() : "ONLINE",
+                e.getDept(),
                 e.getCreatedAt() != null ? e.getCreatedAt().format(TS) : null,
                 e.getUpdatedAt() != null ? e.getUpdatedAt().format(TS) : null);
     }
