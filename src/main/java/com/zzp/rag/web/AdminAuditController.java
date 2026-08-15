@@ -16,9 +16,12 @@ import org.springframework.web.bind.annotation.RestController;
 public class AdminAuditController {
 
     private final AuditQueryService auditQueryService;
+    private final com.zzp.rag.mysql.service.KbHealthService kbHealthService;
 
-    public AdminAuditController(AuditQueryService auditQueryService) {
+    public AdminAuditController(AuditQueryService auditQueryService,
+                                com.zzp.rag.mysql.service.KbHealthService kbHealthService) {
         this.auditQueryService = auditQueryService;
+        this.kbHealthService = kbHealthService;
     }
 
     @GetMapping("/stats")
@@ -52,6 +55,14 @@ public class AdminAuditController {
                 .header("Content-Type", "text/csv; charset=UTF-8")
                 .header("Content-Disposition", "attachment; filename=audit-export.csv")
                 .body(csv);
+    }
+
+    /** 知识库健康度：未答上问题聚类 → FAQ 补录清单 */
+    @GetMapping("/kb-health")
+    public ApiResponse<com.zzp.rag.mysql.service.KbHealthService.KbHealth> kbHealth(
+            @RequestParam(defaultValue = "14") int days) {
+        com.zzp.rag.mysql.service.KbHealthService.KbHealth health = kbHealthService.health(days);
+        return health != null ? ApiResponse.ok(health) : ApiResponse.fail("业务库未连接，请检查 MySQL 服务");
     }
 
     @GetMapping("/events")

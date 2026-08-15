@@ -117,4 +117,26 @@ public interface AuditEventMapper extends BaseMapper<AuditEventEntity> {
             LIMIT #{limit}
             """)
     List<Map<String, Object>> employeeActivity(@Param("days") int days, @Param("limit") int limit);
+
+    /** 近 N 天问答总量与未答上量（知识库健康度概览） */
+    @Select("""
+            SELECT COUNT(*) AS total,
+                   COALESCE(SUM(CASE WHEN answer_preview LIKE '%暂无法回答%' THEN 1 ELSE 0 END), 0) AS unanswered
+            FROM audit_event
+            WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)
+            """)
+    Map<String, Object> unansweredOverview(@Param("days") int days);
+
+    /** 近 N 天未答上的问题及频次（健康度聚类原料） */
+    @Select("""
+            SELECT query, COUNT(*) AS cnt
+            FROM audit_event
+            WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)
+              AND answer_preview LIKE '%暂无法回答%'
+              AND query IS NOT NULL AND query <> ''
+            GROUP BY query
+            ORDER BY cnt DESC
+            LIMIT 300
+            """)
+    List<Map<String, Object>> unansweredQueries(@Param("days") int days);
 }
