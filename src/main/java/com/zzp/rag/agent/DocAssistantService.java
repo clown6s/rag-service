@@ -90,6 +90,10 @@ public class DocAssistantService {
         String extra = instruction != null && !instruction.isBlank()
                 ? "\n用户的额外要求：" + instruction : "";
         String prompt = base + extra
+                + "\n\n今年是 " + java.time.LocalDate.now().getYear() + " 年（今天是 "
+                + java.time.LocalDate.now() + "）：涉及日期/年份表述时以此为基准，"
+                + "不得改成其他年份，除非原文或用户明确要求；"
+                + "涉及星期几必须与实际日历一致，不确定的星期几不要写。"
                 + "\n\n完成后，先输出处理结果，然后空一行输出【修改摘要】，"
                 + "用 3-5 条要点概括你做的改动。\n\n[原文]\n" + text + "\n[/原文]";
         String out = chatModel.chat(prompt);

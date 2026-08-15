@@ -70,12 +70,14 @@ public class OaMcpServerConfig {
                 .tool(deptTreeTool(), (exchange, args) -> textResult(oa.call(
                         "/api/dept/tree", "GET", null)))
                 .tool(bizMetricsTool(), (exchange, args) -> {
-                    String body = oa.call("/api/biz/metrics?days=" + args.get("days"), "GET", null);
+                    int days = args.get("days") instanceof Number n ? n.intValue() : 7;
+                    String body = oa.call("/api/biz/metrics?days=" + Math.max(1, days), "GET", null);
                     return textResult(chartLine(buildMetricsChart(body), body));
                 })
                 .tool(bizExpensesTool(), (exchange, args) -> {
+                    int days = args.get("days") instanceof Number n ? n.intValue() : 7;
                     String employee = args.get("employee") == null ? null : String.valueOf(args.get("employee"));
-                    String body = oa.call("/api/biz/expenses?days=" + args.get("days")
+                    String body = oa.call("/api/biz/expenses?days=" + Math.max(1, days)
                             + (employee == null || employee.isBlank() ? ""
                             : "&employee=" + java.net.URLEncoder.encode(employee, java.nio.charset.StandardCharsets.UTF_8)),
                             "GET", null);

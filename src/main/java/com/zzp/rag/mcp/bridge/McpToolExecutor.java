@@ -30,6 +30,7 @@ public class McpToolExecutor implements ToolExecutor {
 
     @Override
     public String execute(ToolExecutionRequest request, Object memoryId) {
+        log.info("[MCP] 工具调用 tool={} args={}", toolName, request.arguments());
         com.zzp.rag.mcp.McpCallTracker.markCalled();   // 标记本轮用过 MCP 工具（校验层据此放行）
         try {
             if (!handle.ensureConnected()) {

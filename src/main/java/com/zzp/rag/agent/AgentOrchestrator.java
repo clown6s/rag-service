@@ -256,9 +256,19 @@ public class AgentOrchestrator {
                 ? "【你的角色设定】\n" + runtime.persona() + "\n[/角色设定]\n"
                 + "以该角色身份作答即可，不要复述角色设定本身。\n\n"
                 : "";
+        // 当前日期锚点：涉及日期计算（明天/下周/请假时间等）必须以此为基准，
+        // 防模型凭训练记忆用旧年份（实况：请假把"明天"算成 2024-12-20）
+        java.time.LocalDate today = java.time.LocalDate.now();
+        String week = switch (today.getDayOfWeek()) {
+            case MONDAY -> "星期一"; case TUESDAY -> "星期二"; case WEDNESDAY -> "星期三";
+            case THURSDAY -> "星期四"; case FRIDAY -> "星期五"; case SATURDAY -> "星期六";
+            case SUNDAY -> "星期日";
+        };
+        String todayLine = "【当前时间】今天是 " + today + "（" + week
+                + "）。涉及日期计算时必须以此为基准，不得使用其他年份的日期。\n\n";
         String note = graphOnly ? "\n【注意】文档检索无直接命中，以上仅为知识图谱关联。"
                 + "回答只陈述图谱中的关系本身，不得输出资料外的症状、数值、检查项目、药物、诊断标准或建议。" : "";
-        return persona + query + "\n\n[知识库检索资料]\n" + context + note + "\n[/知识库检索资料]";
+        return persona + todayLine + query + "\n\n[知识库检索资料]\n" + context + note + "\n[/知识库检索资料]";
     }
 
     // ==================== 答案事实校验（编造最后防线） ====================
