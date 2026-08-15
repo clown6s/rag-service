@@ -45,6 +45,12 @@ public class DocWizardService {
 
     public record WizardResult(String reply, String route, String pendingFileName, byte[] pendingFile) {}
 
+    /** 表单一次性提交结果（飞书表单卡片）：生成全文 + 云文档链接（失败为 null） */
+    public record FormResult(String content, String cloudUrl) {}
+
+    /** 免责脚注（所有出文渠道共用） */
+    public static final String FOOTER = "---\n\n本文引用资料以知识库原文为准，由 AI 辅助生成，请人工核对后发布。";
+
     private static final long TTL_MS = 10 * 60_000L;
 
     private final ConcurrentHashMap<String, State> states = new ConcurrentHashMap<>();
@@ -105,6 +111,58 @@ public class DocWizardService {
             return true;   // 进行中的向导：所有输入都归向导（取消词在 handle 里处理）
         }
         return query != null && TRIGGER.matcher(query).find();
+    }
+
+    /** 是否为全新触发（无进行中状态 + 命中触发词）——飞书桥据此弹表单卡片，替代文字追问 */
+    public boolean isFreshTrigger(String key, String query) {
+        return !isActive(key) && query != null && TRIGGER.matcher(query).find();
+    }
+
+    /** 表单一次性提交：生成全文 → 云文档直出 → 注册预览状态（后续文本消息可继续修改/定稿） */
+    public FormResult submitForm(String key, String docType, String title, String points,
+                                 String tone, String issuer) {
+        String content = docAssistant.generateContent(docType, title, points, tone, issuer);
+        String url = publishCloudDoc(title, content);
+        State s = new State();
+        s.stage = Stage.PREVIEW;
+        s.docType = docType == null || docType.isBlank() ? "通用" : docType;
+        s.title = title;
+        s.points = points == null ? "" : points;
+        s.tone = tone == null || tone.isBlank() ? "正式" : tone;
+        s.issuer = issuer == null ? "" : issuer;
+        s.content = content;
+        states.put(key, s);
+        return new FormResult(content, url);
+    }
+
+    /** 云文档直出：创建 + 写入（标题去重 + 缩进排版）+ 落款右对齐 + 组织内可读 → 链接；失败返回 null */
+    public String publishCloudDoc(String title, String content) {
+        try {
+            String docId = feishuClient.createCloudDoc(title);
+            if (docId == null) {
+                return null;
+            }
+            java.util.List<String> blockIds = feishuClient.writeCloudDocBlocks(docId,
+                    toBlocksForExport(content + "\n\n" + FOOTER, title));
+            if (blockIds == null || blockIds.isEmpty()) {
+                return null;
+            }
+            for (int idx : signoffIndexes(content)) {
+                if (idx >= 0 && idx < blockIds.size()) {
+                    feishuClient.updateBlockAlign(docId, blockIds.get(idx), 3);
+                }
+            }
+            feishuClient.makeCloudDocOrgReadable(docId);
+            return feishuClient.cloudDocUrl(docId);
+        } catch (Exception e) {
+            log.warn("[文档向导] 云文档直出失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 云文档不可用时的 docx 文件回退字节 */
+    public byte[] toDocxFile(String title, String content) {
+        return docAssistant.toFile("docx", title, content, FOOTER);
     }
 
     // ==================== 主处理入口 ====================
@@ -234,7 +292,9 @@ public class DocWizardService {
         if (out == null || out.isBlank()) {
             return new WizardResult("这次修改没成功，请再说一遍要求。", "DOC_WIZARD", null, null);
         }
-        s.content = out;
+        // 摘要与正文分离：定稿文档里不能混入【修改摘要】，且摘要行会把落款挤出末 4 行检测范围
+        int sumIdx = out.indexOf("【修改摘要】");
+        s.content = (sumIdx >= 0 ? out.substring(0, sumIdx) : out).strip();
         String summary = extractSummary(out);
         return new WizardResult(buildPreviewText(s, summary), "DOC_WIZARD", null, null);
     }
@@ -562,7 +622,7 @@ public class DocWizardService {
     }
 
     private String buildFooter(State s) {
-        return "---\n\n本文引用资料以知识库原文为准，由 AI 辅助生成，请人工核对后发布。";
+        return FOOTER;
     }
 
     // ==================== 工具方法 ====================

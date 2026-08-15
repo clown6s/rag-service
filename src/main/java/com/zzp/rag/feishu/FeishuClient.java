@@ -290,7 +290,8 @@ public class FeishuClient {
         }
     }
 
-    /** 设置云文档组织内可读（成员可打开链接）；失败静默（文档仍在应用空间内） */
+    /** 设置云文档组织内可读（成员可打开链接）；失败静默（文档仍在应用空间内）。
+     *  注意：该接口为 PATCH（POST 会 404 page not found），需 drive:drive 权限 */
     public void makeCloudDocOrgReadable(String documentId) {
         try {
             String token = tenantAccessToken();
@@ -307,7 +308,7 @@ public class FeishuClient {
                     .timeout(Duration.ofSeconds(15))
                     .header("Content-Type", "application/json; charset=utf-8")
                     .header("Authorization", "Bearer " + token)
-                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .method("PATCH", HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() != 200 || objectMapper.readTree(resp.body()).path("code").asInt() != 0) {

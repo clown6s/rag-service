@@ -46,6 +46,9 @@ public class FeishuChatBridge {
             });
     private final java.util.concurrent.ConcurrentHashMap<String, Long> seenMessageIds =
             new java.util.concurrent.ConcurrentHashMap<>();
+    /** 表单提交进行中（按卡片 messageId 去重：飞书回调 3s 超时会重投） */
+    private final java.util.concurrent.ConcurrentHashMap<String, Boolean> formInFlight =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     public FeishuChatBridge(FeishuConfig config, FeishuClient client,
                             AgentOrchestrator orchestrator,
@@ -109,9 +112,27 @@ public class FeishuChatBridge {
             }
             log.info("[飞书] 收到消息 chat={} query={}", chatId, query);
 
-            // 文档向导慢生成（确认生成/修改）先回"正在处理"，避免用户干等
+            // 文档向导：key = 会话+用户（与卡片回调、takePending 的 key 必须一致）
             String wizardUser = auditUser;
             String wizardKey = chatId + ":" + (wizardUser == null ? "anon" : wizardUser);
+
+            // 新触发：弹表单卡片（input/select 一次填完），不再文字追问
+            if (docWizardService.isFreshTrigger(wizardKey, query)) {
+                String formCard = buildDocFormCard();
+                if (formCard != null && client.replyCard(messageId, formCard)) {
+                    auditService.record(new AuditEvent(
+                            ctx.traceId(),
+                            LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                            auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/chat",
+                            "DOC_WIZARD", query, 0, List.of(), 0,
+                            false, 0, "文档表单卡片", 0,
+                            System.currentTimeMillis() - start, "SUCCESS", null, 0));
+                    return;
+                }
+                // 卡片发送失败 → 落到文字向导兜底
+            }
+
+            // 文档向导慢生成（确认生成/修改）先回"正在处理"，避免用户干等
             if (docWizardService.willGenerateSlow(wizardKey, query)) {
                 client.replyMessage(messageId, "收到，正在生成文档，约需半分钟…");
             }
@@ -144,14 +165,14 @@ public class FeishuChatBridge {
                 }
             }
             boolean replied;
-            if (config.cardMode()) {
-                String card = buildCard(query, markdown, answer.sources(), chatId,
-                        !"DOC_WIZARD".equals(answer.route()));
+            if (!"DOC_WIZARD".equals(answer.route()) && config.cardMode()) {
+                String card = buildCard(query, markdown, answer.sources(), chatId);
                 replied = card != null && client.replyCard(messageId, card);
                 if (!replied) {
                     replied = client.replyMessage(messageId, toFeishuText(markdown));   // 卡片失败回退纯文本
                 }
             } else {
+                // 文档向导回复纯文本：表单卡片已替代文字交互，不再挂反馈卡片
                 replied = client.replyMessage(messageId, toFeishuText(markdown));
             }
             if (!replied) {
@@ -187,12 +208,6 @@ public class FeishuChatBridge {
      * 用 ObjectMapper 序列化——手工拼接遇换行/引号会产出非法 JSON（飞书 400）。
      */
     private String buildCard(String query, String markdown, List<String> sources, String chatId) {
-        return buildCard(query, markdown, sources, chatId, true);
-    }
-
-    /** showSource=false：文档向导等无来源概念的回复不显示来源注记 */
-    private String buildCard(String query, String markdown, List<String> sources, String chatId,
-                             boolean showSource) {
         String md = markdown.length() > 6000
                 ? markdown.substring(0, 6000) + "\n\n…（内容过长已截断，完整内容请在 Web 端查看）"
                 : markdown;
@@ -207,11 +222,9 @@ public class FeishuChatBridge {
         java.util.List<Object> elements = new java.util.ArrayList<>();
         elements.add(java.util.Map.of("tag", "markdown", "content", md));
         elements.add(java.util.Map.of("tag", "hr"));
-        if (showSource) {
-            elements.add(java.util.Map.of("tag", "note", "elements",
-                    java.util.List.of(java.util.Map.of("tag", "plain_text",
-                            "content", "📄 来源：" + sourceNote))));
-        }
+        elements.add(java.util.Map.of("tag", "note", "elements",
+                java.util.List.of(java.util.Map.of("tag", "plain_text",
+                        "content", "📄 来源：" + sourceNote))));
         elements.add(java.util.Map.of("tag", "action", "actions", java.util.List.of(
                 java.util.Map.of("tag", "button",
                         "text", java.util.Map.of("tag", "plain_text", "content", "👍 有帮助"),
@@ -241,12 +254,110 @@ public class FeishuChatBridge {
     }
 
     /**
+     * 文档表单卡片：input/select 输入框一次收集全部槽位，点「生成文档」提交
+     * （card.action.trigger 的 form_value 回传）→ 云文档直出。
+     * 纯文本无图标；替代原文字多轮追问。
+     */
+    private String buildDocFormCard() {
+        java.util.List<Object> elements = new java.util.ArrayList<>();
+        elements.add(java.util.Map.of("tag", "markdown",
+                "content", "请填写以下信息，点【生成文档】即可直接产出飞书云文档："));
+        elements.add(java.util.Map.of("tag", "select_static",
+                "name", "docType",
+                "label", java.util.Map.of("tag", "plain_text", "content", "文档类型"),
+                "initial_option", "通知",
+                "options", java.util.List.of("通知", "报告", "方案", "周报", "会议纪要", "制度办法", "通用文档")
+                        .stream().map(t -> java.util.Map.of(
+                                "label", java.util.Map.of("tag", "plain_text", "content", t),
+                                "value", t)).toList()));
+        elements.add(java.util.Map.of("tag", "input",
+                "name", "title",
+                "required", true,
+                "label", java.util.Map.of("tag", "plain_text", "content", "标题"),
+                "placeholder", java.util.Map.of("tag", "plain_text",
+                        "content", "如：关于五一假期安排的通知")));
+        elements.add(java.util.Map.of("tag", "textarea",
+                "name", "points",
+                "label", java.util.Map.of("tag", "plain_text", "content", "内容要点"),
+                "placeholder", java.util.Map.of("tag", "plain_text",
+                        "content", "每行一条要点；可引用知识库文档，如「参考《员工年休假管理办法》」")));
+        elements.add(java.util.Map.of("tag", "select_static",
+                "name", "tone",
+                "label", java.util.Map.of("tag", "plain_text", "content", "语气"),
+                "initial_option", "正式公文语气",
+                "options", java.util.List.of("正式公文语气", "简洁直接", "亲切自然")
+                        .stream().map(t -> java.util.Map.of(
+                                "label", java.util.Map.of("tag", "plain_text", "content", t),
+                                "value", t)).toList()));
+        elements.add(java.util.Map.of("tag", "input",
+                "name", "issuer",
+                "label", java.util.Map.of("tag", "plain_text", "content", "落款"),
+                "placeholder", java.util.Map.of("tag", "plain_text",
+                        "content", "如：行政部（不填默认公司）")));
+        elements.add(java.util.Map.of("tag", "hr"));
+        elements.add(java.util.Map.of("tag", "action", "actions", java.util.List.of(
+                java.util.Map.of("tag", "button",
+                        "text", java.util.Map.of("tag", "plain_text", "content", "生成文档"),
+                        "type", "primary",
+                        "value", java.util.Map.of("action", "doc_form_submit")))));
+
+        java.util.Map<String, Object> card = new java.util.LinkedHashMap<>();
+        card.put("config", java.util.Map.of("wide_screen_mode", true));
+        card.put("header", java.util.Map.of(
+                "title", java.util.Map.of("tag", "plain_text", "content", "帮我写文档"),
+                "template", "blue"));
+        card.put("elements", elements);
+        try {
+            return objectMapper.writeValueAsString(card);
+        } catch (Exception e) {
+            log.error("[飞书] 文档表单卡片构建失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 表单提交结果卡片：云文档链接按钮 + 后续修改提示（url 为 null 表示回退文件已发） */
+    private String buildDocResultCard(String title, String url) {
+        java.util.List<Object> elements = new java.util.ArrayList<>();
+        elements.add(java.util.Map.of("tag", "markdown",
+                "content", url != null
+                        ? "已生成《" + title + "》，可直接在线编辑。"
+                        : "已生成《" + title + "》docx 文件并发送到会话，请查收。"));
+        if (url != null) {
+            elements.add(java.util.Map.of("tag", "action", "actions", java.util.List.of(
+                    java.util.Map.of("tag", "button",
+                            "text", java.util.Map.of("tag", "plain_text", "content", "打开云文档"),
+                            "type", "primary",
+                            "url", url,
+                            "value", java.util.Map.of("action", "open_doc")))));
+        }
+        elements.add(java.util.Map.of("tag", "note", "elements",
+                java.util.List.of(java.util.Map.of("tag", "plain_text",
+                        "content", "需要调整？直接回复修改要求（如「第二段精简」「落款改行政部」），"
+                                + "回复「定稿」出正式文件。"))));
+
+        java.util.Map<String, Object> card = new java.util.LinkedHashMap<>();
+        card.put("config", java.util.Map.of("wide_screen_mode", true));
+        card.put("header", java.util.Map.of(
+                "title", java.util.Map.of("tag", "plain_text", "content", "帮我写文档"),
+                "template", "blue"));
+        card.put("elements", elements);
+        try {
+            return objectMapper.writeValueAsString(card);
+        } catch (Exception e) {
+            log.error("[飞书] 文档结果卡片构建失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * 卡片按钮回调（card.action.trigger）：
      * - helpful/unhelpful → 审计记录 + 感谢回复
      * - regenerate → 重新执行对话 → 原卡片原地更新
+     * - doc_form_submit → 读表单字段 → 生成全文 → 云文档直出（失败回退 docx 文件）→ 卡片原地换结果
      */
-    public void handleCardAction(java.util.Map<String, Object> value, String openMessageId,
-                                 String openChatId, Object operator) {
+    public void handleCardAction(java.util.Map<String, Object> value,
+                                 java.util.Map<String, Object> formValue,
+                                 String openMessageId, String openChatId, String operator) {
         String action = value != null ? String.valueOf(value.getOrDefault("action", "")) : "";
         log.info("[飞书] 卡片动作 {} messageId={} chat={}", action, openMessageId, openChatId);
         switch (action) {
@@ -254,7 +365,7 @@ public class FeishuChatBridge {
                 auditService.record(new AuditEvent(
                         AuditEvent.AuditContext.capture().traceId(),
                         LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-                        operator != null ? String.valueOf(operator) : "anonymous",
+                        operator != null ? operator : "anonymous",
                         "-", "feishu/card_feedback",
                         null, action, 0, List.of(), 0,
                         false, 0, null, 0, 0, "SUCCESS", null, 0));
@@ -275,8 +386,71 @@ public class FeishuChatBridge {
                     client.replyMessage(openMessageId, toFeishuText(markdown));   // 更新失败回退纯文本
                 }
             }
+            case "doc_form_submit" -> {
+                // LLM 生成约半分钟，飞书卡片回调 3s 超时即重投——必须异步 + 按 messageId 去重
+                if (formInFlight.putIfAbsent(openMessageId, Boolean.TRUE) != null) {
+                    log.info("[飞书] 表单提交重复回调（重投），跳过 messageId={}", openMessageId);
+                    return;
+                }
+                String title = textOf(formValue, "title");
+                if (title == null || title.isBlank()) {
+                    formInFlight.remove(openMessageId);
+                    client.replyMessage(openMessageId, "请先填写【标题】再点生成");
+                    return;
+                }
+                final String key = openChatId + ":" + (operator == null ? "anon" : operator);
+                final String docType = textOf(formValue, "docType");
+                final String points = textOf(formValue, "points");
+                final String tone = textOf(formValue, "tone");
+                final String issuer = textOf(formValue, "issuer");
+                worker.execute(() -> {
+                    try {
+                        com.zzp.rag.agent.DocWizardService.FormResult result =
+                                docWizardService.submitForm(key, docType, title, points, tone, issuer);
+                        String url = result.cloudUrl();
+                        if (url != null) {
+                            String card = buildDocResultCard(title, url);
+                            if (card == null || !client.updateCard(openMessageId, card)) {
+                                client.replyMessage(openMessageId,
+                                        "文档已创建为飞书云文档（在线可编辑）：\n" + url);
+                            }
+                        } else {
+                            // 云文档不可用 → docx 文件消息兜底
+                            byte[] file = docWizardService.toDocxFile(title, result.content());
+                            String fileKey = client.uploadFile(
+                                    title.strip().replaceAll("[\\\\/:*?\"<>|\\s]+", "_") + ".docx", file);
+                            if (fileKey != null) {
+                                client.sendFileMessage(openChatId, fileKey);
+                            }
+                            String card = buildDocResultCard(title, null);
+                            if (card == null || !client.updateCard(openMessageId, card)) {
+                                client.replyMessage(openMessageId,
+                                        "已生成《" + title + "》docx 文件并发送到会话。");
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.error("[飞书] 表单提交生成失败 chat={}", openChatId, e);
+                        client.replyMessage(openMessageId, "生成失败，请重试或直接回复修改要求。");
+                    } finally {
+                        formInFlight.remove(openMessageId);
+                    }
+                });
+            }
             default -> log.warn("[飞书] 未知卡片动作: {}", action);
         }
+    }
+
+    /** 表单字段取值（空串归一为 null） */
+    private String textOf(java.util.Map<String, Object> formValue, String name) {
+        if (formValue == null) {
+            return null;
+        }
+        Object v = formValue.get(name);
+        if (v == null) {
+            return null;
+        }
+        String s = String.valueOf(v).strip();
+        return s.isEmpty() ? null : s;
     }
 
     /** 提取文本并剥掉 @机器人 提及（文本消息里 @ 以 @_user_1 形式出现） */

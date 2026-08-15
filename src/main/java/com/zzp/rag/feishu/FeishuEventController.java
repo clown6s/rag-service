@@ -62,7 +62,7 @@ public class FeishuEventController {
             log.warn("[飞书] 验签失败，丢弃事件");
             return Map.of("code", 401, "msg", "invalid token");
         }
-        // 3. 只处理消息事件，异步转桥
+        // 3. 消息事件异步转桥；卡片回调（长连接模式下走 WS，HTTP 模式此处等价支持，兼作联调入口）
         String eventType = body.path("header").path("event_type").asText();
         if ("im.message.receive_v1".equals(eventType)) {
             executor.execute(() -> {
@@ -70,6 +70,31 @@ public class FeishuEventController {
                     bridge.handleEvent(body);
                 } catch (Exception e) {
                     log.error("[飞书] 事件处理异常", e);
+                }
+            });
+        } else if ("card.action.trigger".equals(eventType)) {
+            executor.execute(() -> {
+                try {
+                    JsonNode ev = body.path("event");
+                    String opId = ev.path("operator").path("open_id").asText(null);
+                    if (opId == null || opId.isBlank()) {
+                        opId = ev.path("operator").path("tenant_key").asText(null);
+                    }
+                    JsonNode action = ev.has("action") ? ev.path("action")
+                            : ev.path("card").path("action");   // schema 2.0 为 event.action，兼容旧结构
+                    java.util.Map<String, Object> value = new java.util.LinkedHashMap<>();
+                    action.path("value").fields().forEachRemaining(
+                            f -> value.put(f.getKey(), f.getValue().isTextual()
+                                    ? f.getValue().asText() : f.getValue()));
+                    java.util.Map<String, Object> formValue = new java.util.LinkedHashMap<>();
+                    action.path("form_value").fields().forEachRemaining(
+                            f -> formValue.put(f.getKey(), f.getValue().asText()));
+                    bridge.handleCardAction(value, formValue,
+                            ev.path("context").path("open_message_id").asText(),
+                            ev.path("context").path("open_chat_id").asText(),
+                            opId);
+                } catch (Exception e) {
+                    log.error("[飞书] 卡片回调处理异常", e);
                 }
             });
         } else {

@@ -51,11 +51,20 @@ public class FeishuWsClient {
                                 com.lark.oapi.event.cardcallback.model.P2CardActionTrigger event) {
                             try {
                                 var data = event.getEvent();
+                                // operator.open_id 与消息路径的 open_id 一致（向导状态 key 依赖此一致性）；缺失回退 tenant_key
+                                String opId = null;
+                                if (data.getOperator() != null) {
+                                    opId = data.getOperator().getOpenId() != null
+                                            && !data.getOperator().getOpenId().isBlank()
+                                            ? data.getOperator().getOpenId()
+                                            : data.getOperator().getTenantKey();
+                                }
                                 bridge.handleCardAction(
                                         data.getAction().getValue(),
+                                        data.getAction().getFormValue(),
                                         data.getContext().getOpenMessageId(),
                                         data.getContext().getOpenChatId(),
-                                        data.getOperator() != null ? data.getOperator().getTenantKey() : null);
+                                        opId);
                             } catch (Exception e) {
                                 log.warn("[飞书] 卡片回调处理异常: {}", e.getMessage());
                             }
