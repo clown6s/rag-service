@@ -439,10 +439,10 @@ public class DocWizardService {
                 type = 3;
                 text = s.replaceFirst("^#+\\s*", "");
             } else if (s.matches("^\\d+[\\.、].*")) {
-                type = 12;
+                type = 13;   // ordered 列表块 = 13（实测：12/13 反了会 400 invalid param）
                 text = s.replaceFirst("^\\d+[\\.、]\\s*", "");
             } else if (s.matches("^[-*•].*")) {
-                type = 13;
+                type = 12;   // bullet 列表块 = 12
                 text = s.replaceFirst("^[-*•]\\s*", "");
             } else {
                 type = 2;
@@ -451,8 +451,8 @@ public class DocWizardService {
             String key = switch (type) {
                 case 3 -> "heading1";
                 case 4 -> "heading2";
-                case 12 -> "ordered";
-                case 13 -> "bullet";
+                case 13 -> "ordered";
+                case 12 -> "bullet";
                 default -> "text";
             };
             blocks.add(java.util.Map.of("block_type", type, key, java.util.Map.of("elements",
