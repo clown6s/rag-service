@@ -50,6 +50,7 @@ public class DocWizardService {
     private final ConcurrentHashMap<String, State> states = new ConcurrentHashMap<>();
     private final DocAssistantService docAssistant;
     private final RetrievalPipeline retrievalPipeline;
+    private final com.zzp.rag.feishu.FeishuClient feishuClient;
 
     @Value("${rag.doc.default-issuer:}")
     private String defaultIssuer;
@@ -57,9 +58,15 @@ public class DocWizardService {
     /** 员工部门（落款默认值来源；由编排器在员工解析后注入） */
     private final ThreadLocal<String> deptHint = new ThreadLocal<>();
 
-    public DocWizardService(DocAssistantService docAssistant, RetrievalPipeline retrievalPipeline) {
+    /** 定稿 docx 直出飞书云文档（在线协作）；false = 文件消息 */
+    @Value("${rag.doc.cloud-doc:true}")
+    private boolean cloudDocEnabled;
+
+    public DocWizardService(DocAssistantService docAssistant, RetrievalPipeline retrievalPipeline,
+                            com.zzp.rag.feishu.FeishuClient feishuClient) {
         this.docAssistant = docAssistant;
         this.retrievalPipeline = retrievalPipeline;
+        this.feishuClient = feishuClient;
     }
 
     public void setDeptHint(String dept) {
@@ -179,6 +186,24 @@ public class DocWizardService {
         if (isFinalizeWord(q)) {
             String fileName = safeFileTitle(s.title);
             byte[] file = docAssistant.toFile(s.format, s.title, s.content, buildFooter(s));
+            // docx 直出飞书云文档（在线协作）；失败/其他格式回退文件消息
+            if ("docx".equals(s.format) && cloudDocEnabled) {
+                try {
+                    String docId = feishuClient.createCloudDoc(s.title);
+                    if (docId != null && feishuClient.writeCloudDocBlocks(docId,
+                            toBlocks(s.content + "\n\n" + buildFooter(s)))) {
+                        feishuClient.makeCloudDocOrgReadable(docId);
+                        String url = feishuClient.cloudDocUrl(docId);
+                        log.info("[文档向导] 云文档已创建 {}", url);
+                        return new WizardResult(
+                                "文档已创建为飞书云文档（在线可编辑）：\n" + url
+                                        + "\n\n文档就此定稿，有需要随时再找我。",
+                                "DOC_WIZARD", null, null);
+                    }
+                } catch (Exception e) {
+                    log.warn("[文档向导] 云文档创建失败，回退文件: {}", e.getMessage());
+                }
+            }
             String reply = "已按预览生成文件。文档就此定稿，有需要随时再找我。";
             return new WizardResult(reply, "DOC_WIZARD", fileName + "." + s.format, file);
         }
@@ -390,6 +415,46 @@ public class DocWizardService {
                 ? s.content.substring(0, 2000) + "\n\n（预览已截断，全文以定稿文件为准）"
                 : s.content;
         return head + content;
+    }
+
+    /** markdown → 飞书云文档 blocks（2 文本 / 3 一级标题 / 4 二级标题 / 12 有序 / 13 无序） */
+    private java.util.List<java.util.Map<String, Object>> toBlocks(String markdown) {
+        java.util.List<java.util.Map<String, Object>> blocks = new java.util.ArrayList<>();
+        for (String line : markdown.split("\n", -1)) {
+            String s = line.strip();
+            if (s.isEmpty() || s.startsWith("---")) {
+                continue;
+            }
+            int type;
+            String text;
+            if (s.startsWith("###")) {
+                type = 4;
+                text = s.replaceFirst("^#+\\s*", "");
+            } else if (s.startsWith("#")) {
+                type = 3;
+                text = s.replaceFirst("^#+\\s*", "");
+            } else if (s.matches("^\\d+[\\.、].*")) {
+                type = 12;
+                text = s.replaceFirst("^\\d+[\\.、]\\s*", "");
+            } else if (s.matches("^[-*•].*")) {
+                type = 13;
+                text = s.replaceFirst("^[-*•]\\s*", "");
+            } else {
+                type = 2;
+                text = s;
+            }
+            String key = switch (type) {
+                case 3 -> "heading1";
+                case 4 -> "heading2";
+                case 12 -> "ordered";
+                case 13 -> "bullet";
+                default -> "text";
+            };
+            blocks.add(java.util.Map.of("block_type", type, key, java.util.Map.of("elements",
+                    java.util.List.of(java.util.Map.of("text_run",
+                            java.util.Map.of("content", text))))));
+        }
+        return blocks;
     }
 
     private String buildFooter(State s) {

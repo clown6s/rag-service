@@ -187,6 +187,109 @@ public class FeishuClient {
         return s != null && s.length() > max ? s.substring(0, max) : s;
     }
 
+    // ==================== 飞书云文档（在线协作文档直出，替代文件消息） ====================
+
+    /** 创建飞书云文档（docx）→ document_id；权限不足/失败返回 null */
+    public String createCloudDoc(String title) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return null;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "title", title == null || title.isBlank() ? "文档" : title));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/docx/v1/documents"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            JsonNode node = objectMapper.readTree(resp.body());
+            String docId = node.path("data").path("document").path("document_id").asText(null);
+            if (docId == null) {
+                log.warn("[飞书] 云文档创建失败: {}", truncate(resp.body(), 200));
+                return null;
+            }
+            return docId;
+        } catch (Exception e) {
+            log.warn("[飞书] 云文档创建异常: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 写入云文档内容（blocks 批量追加到根块）。
+     * blocks 元素：{"block_type":2,"text":{"elements":[{"text_run":{"content":"..."}}]}}
+     * 类型：2=文本 3=一级标题 4=二级标题 12=有序列表 13=无序列表
+     */
+    public boolean writeCloudDocBlocks(String documentId,
+                                       java.util.List<java.util.Map<String, Object>> blocks) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return false;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "children", blocks,
+                    "index", 0));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/docx/v1/documents/"
+                                    + documentId + "/blocks/" + documentId + "/children"))
+                    .timeout(Duration.ofSeconds(20))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            boolean ok = resp.statusCode() == 200
+                    && objectMapper.readTree(resp.body()).path("code").asInt() == 0;
+            if (!ok) {
+                log.warn("[飞书] 云文档写入失败: {}", truncate(resp.body(), 200));
+            }
+            return ok;
+        } catch (Exception e) {
+            log.warn("[飞书] 云文档写入异常: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /** 设置云文档组织内可读（成员可打开链接）；失败静默（文档仍在应用空间内） */
+    public void makeCloudDocOrgReadable(String documentId) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "link_share_entity", "tenant_readable",
+                    "external_access_entity", "closed",
+                    "external_access", false));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/drive/v1/permissions/"
+                                    + documentId + "/public?type=docx"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200 || objectMapper.readTree(resp.body()).path("code").asInt() != 0) {
+                log.warn("[飞书] 云文档公开设置失败（不影响使用）: {}", truncate(resp.body(), 150));
+            }
+        } catch (Exception e) {
+            log.warn("[飞书] 云文档公开设置异常: {}", e.getMessage());
+        }
+    }
+
+    /** 云文档访问链接（SaaS 域名，私有化部署换 config.baseUrl 同域） */
+    public String cloudDocUrl(String documentId) {
+        return config.baseUrl().contains("open.feishu.cn")
+                ? "https://feishu.cn/docx/" + documentId
+                : config.baseUrl() + "/docx/" + documentId;
+    }
+
     // ==================== 文件消息（文档生成定稿推送） ====================
 
     /** 上传文件到飞书素材库 → file_key（失败返回 null） */
