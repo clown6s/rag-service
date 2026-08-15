@@ -623,21 +623,51 @@ public class AgentOrchestrator {
     private static final java.util.regex.Pattern EMPLOYEE_INFO_WORDS =
             java.util.regex.Pattern.compile("入职|工号|部门|职位|岗位|什么时候|何时|哪一年|薪资|工资");
 
+    /** 人数统计问法（"我们公司有多少人"/"研发部有几个人"） */
+    private static final java.util.regex.Pattern HEADCOUNT =
+            java.util.regex.Pattern.compile("多少人|有几个人|有几名|几名员工|员工人数|员工总数|人数是多少");
+
     /**
-     * 员工目录确定性直查：问题含员工姓名 + 个人信息关键词时直接查目录作答。
-     * 不依赖 LLM 是否调用 employee_lookup（工具决策不稳定，实况：
-     * "王强是什么时候入职的"被图谱"王强→预算负责人"带偏，模型未调工具、答了兜底），
-     * 在预检索之前拦截，同名图谱实体不会污染上下文。
+     * 员工目录确定性直查：不依赖 LLM 是否调用 MCP 工具（工具决策不稳定，实况：
+     * "王强是什么时候入职的"被图谱带偏未调 employee_lookup、"我们公司有多少人"
+     * 未调 employee_directory，均答了兜底），在 SOP/路由之前拦截。
+     * 三种模式：人数统计（全公司/部门级）、员工个人信息（姓名 + 关键词）。
      * 未启用 MCP 技能的员工不生效；未命中返回 null 走常规路径。
      */
     private AgentAnswer tryEmployeeLookup(String query, String route,
                                           EmployeeContext.EmployeeRuntime runtime) {
         try {
-            if (!EMPLOYEE_INFO_WORDS.matcher(query).find()) {
-                return null;
-            }
             Long employeeId = runtime != null ? runtime.employeeId() : -1;
             if (!skillRegistryToolProvider.mcpSkillsEnabled(employeeId)) {
+                return null;
+            }
+            // 人数统计问法（确定性，含部门级："研发部有几个人"）
+            if (HEADCOUNT.matcher(query).find()) {
+                String dept = null;
+                for (java.util.Map<String, String> emp : com.zzp.rag.mcp.demo.DemoMcpData.EMPLOYEES) {
+                    if (query.contains(emp.get("dept"))) {
+                        dept = emp.get("dept");
+                        break;
+                    }
+                }
+                // 数据驱动计数（directory() 的返回带表头行，lines().count() 会多数 1）
+                final String deptName = dept;
+                int count = deptName == null
+                        ? com.zzp.rag.mcp.demo.DemoMcpData.EMPLOYEES.size()
+                        : (int) com.zzp.rag.mcp.demo.DemoMcpData.EMPLOYEES.stream()
+                                .filter(e -> e.get("dept").equals(deptName)).count();
+                String listing = com.zzp.rag.mcp.demo.DemoMcpData.directory(dept);
+                if (dept == null) {
+                    listing = listing.replaceFirst("全体员工名单：\\s*", "");   // 表头与答案首句重复
+                }
+                String answer = dept != null
+                        ? dept + "共有 " + count + " 人：\n" + listing
+                        : "根据员工目录，公司共有 " + count + " 位员工：\n" + listing;
+                log.info("[Agent] 员工目录直查（人数统计 dept={}）确定性作答", dept);
+                answer = answer.strip();
+                return new AgentAnswer(answer, List.of(), route, false, 0, true, employeeId);
+            }
+            if (!EMPLOYEE_INFO_WORDS.matcher(query).find()) {
                 return null;
             }
             java.util.List<String> hits = new java.util.ArrayList<>();
@@ -653,8 +683,7 @@ public class AgentOrchestrator {
                     ? hits.get(0) + "。"
                     : String.join("\n", hits);
             log.info("[Agent] 员工目录直查命中 {} 人，确定性作答", hits.size());
-            return new AgentAnswer(answer, List.of(), route, false, 0, true,
-                    runtime != null ? runtime.employeeId() : 0);
+            return new AgentAnswer(answer, List.of(), route, false, 0, true, employeeId);
         } catch (Exception e) {
             log.warn("[Agent] 员工目录直查异常，回退常规路径: {}", e.getMessage());
             return null;
