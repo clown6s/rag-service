@@ -4,10 +4,11 @@ import com.zzp.rag.mysql.service.DigitalEmployeeService;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * 数字员工配置 API（存储层 CRUD；运行时绑定留阶段 4）
+ * 数字员工配置 API（存储层 CRUD + 生命周期治理）
  * GET /api/rag/admin/employees — 列表
- * POST /api/rag/admin/employees — 创建
+ * POST /api/rag/admin/employees — 创建（默认 ONLINE）
  * PUT /api/rag/admin/employees/{id} — 更新
+ * PATCH /api/rag/admin/employees/{id}/lifecycle — 生命周期流转（DRAFT/TESTING/ONLINE/OFFLINE）
  * DELETE /api/rag/admin/employees/{id} — 删除
  */
 @RestController
@@ -49,6 +50,13 @@ public class EmployeeController {
                                                                    @RequestBody EmployeeRequest req) {
         return doWrite(() -> employeeService.update(id, req.name(), req.avatar(), req.description(),
                 req.systemPrompt(), req.knowledgeScope(), req.status()));
+    }
+
+    /** 生命周期流转（治理状态机：DRAFT/TESTING/ONLINE/OFFLINE；运行时仅 ONLINE/TESTING 可用） */
+    @PatchMapping("/{id}/lifecycle")
+    public ApiResponse<DigitalEmployeeService.EmployeeView> transition(
+            @PathVariable long id, @RequestBody java.util.Map<String, String> body) {
+        return doWrite(() -> employeeService.transition(id, body.get("lifecycle")));
     }
 
     @DeleteMapping("/{id}")

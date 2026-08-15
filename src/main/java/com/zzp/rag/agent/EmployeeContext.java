@@ -121,15 +121,19 @@ public class EmployeeContext {
         }
         try {
             DigitalEmployeeService.EmployeeView v = employeeService.get(id);
-            EmployeeRuntime runtime = (v != null && v.status() == 1)
+            // 生命周期治理：仅 ONLINE/TESTING 可运行（DRAFT/OFFLINE 一律按无绑定处理）
+            boolean usable = v != null && v.status() == 1
+                    && ("ONLINE".equals(v.lifecycle()) || "TESTING".equals(v.lifecycle()));
+            EmployeeRuntime runtime = usable
                     ? new EmployeeRuntime(v.id(), v.name(), v.systemPrompt(), buildScopeExpr(v.knowledgeScope()))
                     : null;
             resolveCache.put(id, new ResolveEntry(runtime, now));
             if (runtime != null) {
-                log.info("[员工上下文] 绑定员工 id={} name={} persona={} scope={}",
-                        id, v.name(), runtime.hasPersona(), runtime.hasScope());
+                log.info("[员工上下文] 绑定员工 id={} name={} lifecycle={} persona={} scope={}",
+                        id, v.name(), v.lifecycle(), runtime.hasPersona(), runtime.hasScope());
             } else {
-                log.info("[员工上下文] 员工 id={} 不存在或停用，按无绑定运行", id);
+                log.info("[员工上下文] 员工 id={} 不可用（不存在/停用/生命周期 {}），按无绑定运行",
+                        id, v != null ? v.lifecycle() : "-");
             }
             return runtime;
         } catch (Exception e) {

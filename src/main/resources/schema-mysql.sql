@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS digital_employee (
   description     VARCHAR(500) NULL,
   system_prompt   TEXT         NULL,
   knowledge_scope VARCHAR(2000) NOT NULL DEFAULT 'all' COMMENT "'all' 或 JSON 数组字符串，如 [\"docId1\"]",
+  lifecycle       VARCHAR(16)  NOT NULL DEFAULT 'ONLINE' COMMENT '生命周期：DRAFT/TESTING/ONLINE/OFFLINE（治理状态机）',
   status          TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '1启用 0停用',
   created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

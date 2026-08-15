@@ -37,6 +37,7 @@ public class DigitalEmployeeService {
 
     public record EmployeeView(long id, String name, String avatar, String description,
                                String systemPrompt, String knowledgeScope, int status,
+                               String lifecycle,
                                String createdAt, String updatedAt) {}
 
     public List<EmployeeView> list() {
@@ -82,6 +83,7 @@ public class DigitalEmployeeService {
             entity.setDescription(description);
             entity.setSystemPrompt(systemPrompt);
             entity.setKnowledgeScope(normalizeScope(knowledgeScope));
+            entity.setLifecycle("ONLINE");
             entity.setStatus(Boolean.FALSE.equals(statusFlag) ? 0 : 1);
             mapper.insert(entity);
             log.info("[数字员工] 创建 id={} name={}", entity.getId(), entity.getName());
@@ -125,6 +127,32 @@ public class DigitalEmployeeService {
         } catch (Exception e) {
             status.markUnavailable(e.getMessage());
             log.warn("[数字员工] 更新失败，降级: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 生命周期流转：ONLINE/TESTING/OFFLINE/DRAFT（治理状态机，校验合法目标） */
+    public EmployeeView transition(long id, String lifecycle) {
+        if (!status.isAvailable()) {
+            return null;
+        }
+        if (lifecycle == null || !List.of("DRAFT", "TESTING", "ONLINE", "OFFLINE").contains(lifecycle)) {
+            throw new IllegalArgumentException("非法生命周期状态");
+        }
+        try {
+            DigitalEmployeeEntity entity = mapper.selectById(id);
+            if (entity == null) {
+                throw new IllegalArgumentException("数字员工不存在");
+            }
+            entity.setLifecycle(lifecycle);
+            mapper.updateById(entity);
+            log.info("[数字员工] 生命周期流转 id={} → {}", id, lifecycle);
+            return toView(mapper.selectById(id));
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            status.markUnavailable(e.getMessage());
+            log.warn("[数字员工] 生命周期流转失败，降级: {}", e.getMessage());
             return null;
         }
     }
@@ -192,6 +220,7 @@ public class DigitalEmployeeService {
         return new EmployeeView(
                 e.getId(), e.getName(), e.getAvatar(), e.getDescription(), e.getSystemPrompt(),
                 e.getKnowledgeScope(), e.getStatus() != null ? e.getStatus() : 0,
+                e.getLifecycle() != null ? e.getLifecycle() : "ONLINE",
                 e.getCreatedAt() != null ? e.getCreatedAt().format(TS) : null,
                 e.getUpdatedAt() != null ? e.getUpdatedAt().format(TS) : null);
     }

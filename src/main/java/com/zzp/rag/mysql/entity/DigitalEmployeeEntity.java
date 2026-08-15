@@ -25,6 +25,9 @@ public class DigitalEmployeeEntity {
     /** 'all' 或 JSON 数组字符串，如 ["docId1","docId2"]（阶段 4 用于检索元数据过滤） */
     private String knowledgeScope;
 
+    /** 生命周期：DRAFT/TESTING/ONLINE/OFFLINE（治理状态机；运行时仅 ONLINE/TESTING 可用） */
+    private String lifecycle;
+
     /** 1 启用 0 停用 */
     private Integer status;
 

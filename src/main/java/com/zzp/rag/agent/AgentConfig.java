@@ -42,8 +42,7 @@ public class AgentConfig {
                         builder.chatMemoryStore(chatMemoryStore);
                     }
                     return builder.build();
-                })
-                .maxSequentialToolsInvocations(maxToolInvocations)
+                }).maxSequentialToolsInvocations(maxToolInvocations)
                 .build();
     }
 }
