@@ -45,6 +45,28 @@ public class FeishuWsClient {
         }
         try {
             EventDispatcher dispatcher = EventDispatcher.newBuilder("", "")
+                    .onP2CardActionTrigger(new com.lark.oapi.event.cardcallback.P2CardActionTriggerHandler() {
+                        @Override
+                        public com.lark.oapi.event.cardcallback.model.P2CardActionTriggerResponse handle(
+                                com.lark.oapi.event.cardcallback.model.P2CardActionTrigger event) {
+                            try {
+                                var data = event.getEvent();
+                                bridge.handleCardAction(
+                                        data.getAction().getValue(),
+                                        data.getContext().getOpenMessageId(),
+                                        data.getContext().getOpenChatId(),
+                                        data.getOperator() != null ? data.getOperator().getTenantKey() : null);
+                            } catch (Exception e) {
+                                log.warn("[飞书] 卡片回调处理异常: {}", e.getMessage());
+                            }
+                            var resp = new com.lark.oapi.event.cardcallback.model.P2CardActionTriggerResponse();
+                            var toast = new com.lark.oapi.event.cardcallback.model.CallBackToast();
+                            toast.setType("info");
+                            toast.setContent("已收到");
+                            resp.setToast(toast);
+                            return resp;
+                        }
+                    })
                     .onP2MessageReceiveV1(new ImService.P2MessageReceiveV1Handler() {
                         @Override
                         public void handle(P2MessageReceiveV1 event) {

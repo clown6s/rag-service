@@ -106,6 +106,82 @@ public class FeishuClient {
         }
     }
 
+    /** 回复交互卡片（msg_type=interactive，content 为卡片 JSON 字符串） */
+    public boolean replyCard(String messageId, String cardJson) {
+        return sendInteractive("/open-apis/im/v1/messages/"
+                        + java.net.URLEncoder.encode(messageId, StandardCharsets.UTF_8)
+                        + "/reply",
+                cardJson, false);
+    }
+
+    /** 更新卡片（重新生成：原卡片原地替换） */
+    public boolean updateCard(String messageId, String cardJson) {
+        return sendInteractive("/open-apis/im/v1/messages/"
+                        + java.net.URLEncoder.encode(messageId, StandardCharsets.UTF_8),
+                cardJson, true);
+    }
+
+    /** 向群发送新消息（卡片反馈感谢等场景） */
+    public boolean sendCardToChat(String chatId, String cardJson) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return false;
+            }
+            String body = "{\"receive_id\":\"" + escapeJson(chatId)
+                    + "\",\"msg_type\":\"interactive\",\"content\":\"" + escapeJson(cardJson) + "\"}";
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/im/v1/messages?receive_id_type=chat_id"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+                log.warn("[飞书] 卡片发送失败 http={} body={}", resp.statusCode(), truncate(resp.body(), 200));
+                return false;
+            }
+            JsonNode node = objectMapper.readTree(resp.body());
+            return node.path("code").asInt() == 0;
+        } catch (Exception e) {
+            log.warn("[飞书] 卡片发送异常: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean sendInteractive(String path, String cardJson, boolean patch) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return false;
+            }
+            String body = "{\"msg_type\":\"interactive\",\"content\":\"" + escapeJson(cardJson) + "\"}";
+            HttpRequest req = HttpRequest.newBuilder(URI.create(config.baseUrl() + path))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + token)
+                    .method(patch ? "PATCH" : "POST",
+                            HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+                log.warn("[飞书] 卡片{}失败 http={} body={}", patch ? "更新" : "回复",
+                        resp.statusCode(), truncate(resp.body(), 200));
+                return false;
+            }
+            JsonNode node = objectMapper.readTree(resp.body());
+            return node.path("code").asInt() == 0;
+        } catch (Exception e) {
+            log.warn("[飞书] 卡片{}异常: {}", patch ? "更新" : "回复", e.getMessage());
+            return false;
+        }
+    }
+
+    private String escapeJson(String s) {
+        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
     private String truncate(String s, int max) {
         return s != null && s.length() > max ? s.substring(0, max) : s;
     }

@@ -38,6 +38,10 @@ public class FeishuConfig {
     @Value("${rag.feishu.long-connection:true}")
     private boolean longConnection;
 
+    /** 回复形态：card=交互卡片（markdown 渲染 + 反馈按钮），text=纯文本 */
+    @Value("${rag.feishu.reply-mode:card}")
+    private String replyMode;
+
     public boolean enabled() {
         return enabled;
     }
@@ -65,6 +69,10 @@ public class FeishuConfig {
 
     public boolean longConnection() {
         return longConnection;
+    }
+
+    public boolean cardMode() {
+        return !"text".equalsIgnoreCase(replyMode == null ? "" : replyMode);
     }
 
     /** 基本配置齐备（enabled + 域名 + 凭据） */

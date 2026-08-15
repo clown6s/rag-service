@@ -108,8 +108,13 @@ public class FeishuChatBridge {
             // 数字员工对话：conversationId=chat_id（按群隔离记忆）；agentId 默认绑定
             Long agentId = config.defaultAgentId() > 0 ? config.defaultAgentId() : null;
             AgentOrchestrator.AgentAnswer answer = orchestrator.answer(chatId, query, agentId);
-            String text = toFeishuText(StreamTokenFixer.fixFull(answer.answer()));
-            boolean replied = client.replyMessage(messageId, text);
+            String markdown = StreamTokenFixer.fixFull(answer.answer());
+            boolean replied;
+            if (config.cardMode()) {
+                replied = client.replyCard(messageId, buildCard(query, markdown, answer.sources(), chatId));
+            } else {
+                replied = client.replyMessage(messageId, toFeishuText(markdown));
+            }
             if (!replied) {
                 log.warn("[飞书] 回复失败 chat={} messageId={}", chatId, messageId);
             }
@@ -135,6 +140,70 @@ public class FeishuChatBridge {
                     false, 0, null, 0,
                     System.currentTimeMillis() - start, "FAILED", e.getMessage(), 0));
         }
+    }
+
+    /**
+     * 构建回答卡片（交互卡片：markdown 渲染正文 + 来源 note + 反馈按钮）。
+     * 按钮 value 带动作上下文（重新生成需要原问题与群 ID）。
+     */
+    private String buildCard(String query, String markdown, List<String> sources, String chatId) {
+        String md = markdown.length() > 6000
+                ? markdown.substring(0, 6000) + "\n\n…（内容过长已截断，完整内容请在 Web 端查看）"
+                : markdown;
+        String sourceNote = sources.isEmpty() ? "无来源" : String.join("、", sources);
+        String valueRegen = "{\"action\":\"regenerate\",\"query\":\""
+                + escapeJson(query) + "\",\"chatId\":\"" + escapeJson(chatId) + "\"}";
+        return "{\"config\":{\"wide_screen_mode\":true},"
+                + "\"header\":{\"title\":{\"tag\":\"plain_text\",\"content\":\"🤖 数字员工回答\"},\"template\":\"blue\"},"
+                + "\"elements\":["
+                + "{\"tag\":\"markdown\",\"content\":\"" + escapeJson(md) + "\"},"
+                + "{\"tag\":\"hr\"},"
+                + "{\"tag\":\"note\",\"elements\":[{\"tag\":\"plain_text\",\"content\":\"📄 来源：" + escapeJson(sourceNote) + "\"}]},"
+                + "{\"tag\":\"action\",\"actions\":["
+                + "{\"tag\":\"button\",\"text\":{\"tag\":\"plain_text\",\"content\":\"👍 有帮助\"},\"type\":\"primary\",\"value\":{\"action\":\"helpful\"}},"
+                + "{\"tag\":\"button\",\"text\":{\"tag\":\"plain_text\",\"content\":\"👎 无帮助\"},\"type\":\"default\",\"value\":{\"action\":\"unhelpful\"}},"
+                + "{\"tag\":\"button\",\"text\":{\"tag\":\"plain_text\",\"content\":\"🔄 重新生成\"},\"type\":\"default\",\"value\":" + valueRegen + "}"
+                + "]}]}";
+    }
+
+    /**
+     * 卡片按钮回调（card.action.trigger）：
+     * - helpful/unhelpful → 审计记录 + 感谢回复
+     * - regenerate → 重新执行对话 → 原卡片原地更新
+     */
+    public void handleCardAction(java.util.Map<String, Object> value, String openMessageId,
+                                 String openChatId, Object operator) {
+        String action = value != null ? String.valueOf(value.getOrDefault("action", "")) : "";
+        log.info("[飞书] 卡片动作 {} messageId={} chat={}", action, openMessageId, openChatId);
+        switch (action) {
+            case "helpful", "unhelpful" -> {
+                auditService.record(new AuditEvent(
+                        AuditEvent.AuditContext.capture().traceId(),
+                        LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                        operator != null ? String.valueOf(operator) : "anonymous",
+                        "-", "feishu/card_feedback",
+                        null, action, 0, List.of(), 0,
+                        false, 0, null, 0, 0, "SUCCESS", null, 0));
+                client.replyMessage(openMessageId, "helpful".equals(action) ? "感谢反馈 👍" : "收到反馈，我们会持续改进 👎");
+            }
+            case "regenerate" -> {
+                String query = value != null ? String.valueOf(value.getOrDefault("query", "")) : "";
+                String chatId = value != null ? String.valueOf(value.getOrDefault("chatId", "")) : "";
+                if (query.isBlank() || chatId.isBlank()) {
+                    client.replyMessage(openMessageId, "重新生成失败：缺少上下文");
+                    return;
+                }
+                Long agentId = config.defaultAgentId() > 0 ? config.defaultAgentId() : null;
+                AgentOrchestrator.AgentAnswer answer = orchestrator.answer(chatId, query, agentId);
+                String markdown = StreamTokenFixer.fixFull(answer.answer());
+                client.updateCard(openMessageId, buildCard(query, markdown, answer.sources(), openChatId));
+            }
+            default -> log.warn("[飞书] 未知卡片动作: {}", action);
+        }
+    }
+
+    private String escapeJson(String s) {
+        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     /** 提取文本并剥掉 @机器人 提及（文本消息里 @ 以 @_user_1 形式出现） */
