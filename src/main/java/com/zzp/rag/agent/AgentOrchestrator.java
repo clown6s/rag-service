@@ -35,6 +35,8 @@ public class AgentOrchestrator {
     private final StreamingChatModel streamingChatModel;
     private final ChatModel reasonerModel;
     private final ChatModel contextualModel;
+    private final ChatModel turboModel;   // 轻量小模型：闲聊/追问澄清分级（省钱省延迟）
+    private final com.zzp.rag.web.UsageTracker usageTracker;
     private final AgentService agentService;
     private final AgentTools agentTools;
     private final RetrievalPipeline retrievalPipeline;
@@ -52,6 +54,8 @@ public class AgentOrchestrator {
             @Qualifier("streamingChatModel") StreamingChatModel streamingChatModel,
             @Qualifier("reasonerModel") ChatModel reasonerModel,
             @Qualifier("verifyChatModel") ChatModel contextualModel,
+            @Qualifier("contextualChatModel") ChatModel turboModel,
+            com.zzp.rag.web.UsageTracker usageTracker,
             AgentService agentService,
             AgentTools agentTools,
             RetrievalPipeline retrievalPipeline,
@@ -63,6 +67,8 @@ public class AgentOrchestrator {
         this.streamingChatModel = streamingChatModel;
         this.reasonerModel = reasonerModel;
         this.contextualModel = contextualModel;
+        this.turboModel = turboModel;
+        this.usageTracker = usageTracker;
         this.agentService = agentService;
         this.agentTools = agentTools;
         this.retrievalPipeline = retrievalPipeline;
@@ -144,7 +150,10 @@ public class AgentOrchestrator {
                     : retrievalPipeline.buildContext(pre, 3000);
             // 图谱-only：文档片段全被阈值过滤、仅图谱非空（授权过宽重灾区，需收紧）
             boolean graphOnly = !retrievalEmpty && pre.segments().isEmpty() && !pre.graphContext().isBlank();
+            long agentStart = System.currentTimeMillis();
             String answer = agentService.chat(conversationId, enrich(query, context, graphOnly, runtime));
+            usageTracker.record("qwen-plus", "agent_loop", context.length(), answer == null ? 0 : answer.length(),
+                    System.currentTimeMillis() - agentStart);
             boolean mcpUsed = com.zzp.rag.mcp.McpCallTracker.consumeCalled();
             if (mcpUsed) {
                 // MCP 轮校验依据 = 上下文 + 工具执行结果：MCP 数据可核（不误删），
@@ -238,7 +247,10 @@ public class AgentOrchestrator {
                             + "。包含它们的句子必须删除或改写（移除术语本身），不得保留。";
             String graphOnlyRule = graphOnly ? "【重点】本次检索无文档片段命中，仅提供知识图谱关联。"
                     + "回答中超出图谱关系本身的内容（症状、数值、检查项目、药物、诊断标准、建议等）全部删除。" : "";
+            long start = System.currentTimeMillis();
             String out = contextualModel.chat(VERIFY_PROMPT.formatted(missingBlock, graphOnlyRule, context, answer));
+            usageTracker.record("qwen-plus", "verify", context.length(), out == null ? 0 : out.length(),
+                    System.currentTimeMillis() - start);
             if (out == null || out.isBlank()) {
                 return answer;
             }
@@ -726,7 +738,10 @@ public class AgentOrchestrator {
 
     private String route(String query) {
         try {
+            long start = System.currentTimeMillis();
             String out = reasonerModel.chat(ROUTER_PROMPT + query);
+            usageTracker.record("qwen-plus", "route", query.length(), out == null ? 0 : out.length(),
+                    System.currentTimeMillis() - start);
             String cleaned = out == null ? "" : out.trim().toUpperCase();
             if (cleaned.contains("CHAT")) {
                 return "CHAT";
@@ -745,7 +760,10 @@ public class AgentOrchestrator {
     /** 生成追问澄清（门卫放行时才调用；LLM 失败回退固定追问句式） */
     private String clarify(String query) {
         try {
-            String out = reasonerModel.chat(CLARIFY_PROMPT.formatted(query));
+            long start = System.currentTimeMillis();
+            String out = turboModel.chat(CLARIFY_PROMPT.formatted(query));
+            usageTracker.record("qwen-turbo", "clarify", query.length(), out == null ? 0 : out.length(),
+                    System.currentTimeMillis() - start);
             if (out != null && !out.isBlank() && !out.equalsIgnoreCase(query)) {
                 return out.trim();
             }
@@ -774,6 +792,11 @@ public class AgentOrchestrator {
     }
 
     private String chatDirect(String query, EmployeeContext.EmployeeRuntime runtime) {
-        return chatModel.chat(chatPrompt(query, runtime));
+        long start = System.currentTimeMillis();
+        String prompt = chatPrompt(query, runtime);
+        String out = turboModel.chat(prompt);   // 闲聊分级：turbo 小模型（成本/延迟优先）
+        usageTracker.record("qwen-turbo", "chat", prompt.length(), out == null ? 0 : out.length(),
+                System.currentTimeMillis() - start);
+        return out;
     }
 }
