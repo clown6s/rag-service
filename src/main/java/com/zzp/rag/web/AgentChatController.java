@@ -259,7 +259,7 @@ public class AgentChatController {
                 ctx.traceId(),
                 LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
                 ctx.user(), ctx.ip(), "agent/chat",
-                null,                       // category 暂未启用
+                result != null ? result.route() : null,   // category = 路由（看板路由分布用）
                 req.query(),
                 0,                          // history 由服务端记忆管理，此处不记录条数
                 sources,

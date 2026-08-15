@@ -21,11 +21,15 @@ import java.util.Map;
 public class AuditQueryService {
 
     private final AuditEventMapper mapper;
+    private final com.zzp.rag.mysql.mapper.FeedbackAdoptMapper adoptMapper;
     private final MysqlStatus status;
     private final ObjectMapper objectMapper;
 
-    public AuditQueryService(AuditEventMapper mapper, MysqlStatus status, ObjectMapper objectMapper) {
+    public AuditQueryService(AuditEventMapper mapper,
+                             com.zzp.rag.mysql.mapper.FeedbackAdoptMapper adoptMapper,
+                             MysqlStatus status, ObjectMapper objectMapper) {
         this.mapper = mapper;
+        this.adoptMapper = adoptMapper;
         this.status = status;
         this.objectMapper = objectMapper;
     }
@@ -42,6 +46,55 @@ public class AuditQueryService {
             String answerPreview, int answerLength, long totalMs, String status, String error) {}
 
     public record PageResult<T>(long total, int page, int size, List<T> items) {}
+
+    // ==================== 数据看板 ====================
+
+    public record DailyPoint(String day, int requests, int success, int noAnswer,
+                             int feishu, long avgMs, int adoptions) {}
+
+    public record NameCount(String name, int count, long avgMs) {}
+
+    public record DashboardStats(List<DailyPoint> trend, List<NameCount> topQueries,
+                                 List<NameCount> routes, List<NameCount> employees) {}
+
+    /** 近 N 天看板聚合（趋势/热门问题/路由分布/员工活跃度 + 采纳量并入趋势曲线） */
+    public DashboardStats dashboard(int days) {
+        if (!status.isAvailable()) {
+            return null;
+        }
+        try {
+            int safeDays = Math.min(Math.max(days, 1), 90);
+            Map<String, Integer> adoptions = new java.util.HashMap<>();
+            for (Map<String, Object> m : adoptMapper.adoptionTrend(safeDays)) {
+                adoptions.put(str(m.get("day")), (int) num(m.get("cnt")));
+            }
+            List<DailyPoint> trend = mapper.dailyTrend(safeDays).stream()
+                    .map(m -> new DailyPoint(
+                            str(m.get("day")),
+                            (int) num(m.get("cnt")),
+                            (int) num(m.get("success")),
+                            (int) num(m.get("no_answer")),
+                            (int) num(m.get("feishu")),
+                            num(m.get("avg_ms")),
+                            adoptions.getOrDefault(str(m.get("day")), 0)))
+                    .toList();
+            List<NameCount> topQueries = mapper.topQueries(safeDays, 15).stream()
+                    .map(m -> new NameCount(str(m.get("query")), (int) num(m.get("cnt")), 0))
+                    .toList();
+            List<NameCount> routes = mapper.routeDistribution(safeDays).stream()
+                    .map(m -> new NameCount(str(m.get("route")), (int) num(m.get("cnt")), 0))
+                    .toList();
+            List<NameCount> employees = mapper.employeeActivity(safeDays, 15).stream()
+                    .map(m -> new NameCount(str(m.get("user_name")), (int) num(m.get("cnt")),
+                            num(m.get("avg_ms"))))
+                    .toList();
+            return new DashboardStats(trend, topQueries, routes, employees);
+        } catch (Exception e) {
+            status.markUnavailable(e.getMessage());
+            log.warn("[审计查询] 看板统计失败，降级: {}", e.getMessage());
+            return null;
+        }
+    }
 
     public AuditStats stats() {
         if (!status.isAvailable()) {

@@ -126,7 +126,7 @@ public class FeishuChatBridge {
                     ctx.traceId(),
                     LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
                     auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/chat",
-                    null, query, 0, answer.sources(), 0,
+                    answer.route(), query, 0, answer.sources(), 0,
                     answer.rerankDegraded(), answer.graphContextChars(),
                     AuditEvent.truncate(answer.answer(), 500), answer.answer().length(),
                     System.currentTimeMillis() - start, "SUCCESS", null,

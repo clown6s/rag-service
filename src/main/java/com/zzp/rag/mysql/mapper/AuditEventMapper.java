@@ -66,4 +66,55 @@ public interface AuditEventMapper extends BaseMapper<AuditEventEntity> {
     /** 告警引擎：窗口内平均端到端耗时（毫秒；无数据返回 null） */
     @Select("SELECT AVG(total_ms) FROM audit_event WHERE created_at >= #{since}")
     Double windowAvgMs(@Param("since") LocalDateTime since);
+
+    // ==================== 数据看板（运营闭环） ====================
+
+    /** 近 N 天逐日趋势（问答量/成功率/未答上/飞书渠道/均耗时） */
+    @Select("""
+            SELECT DATE_FORMAT(created_at, '%Y-%m-%d') AS day,
+                   COUNT(*) AS cnt,
+                   COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END), 0) AS success,
+                   COALESCE(SUM(CASE WHEN answer_preview LIKE '%暂无法回答%' THEN 1 ELSE 0 END), 0) AS no_answer,
+                   COALESCE(SUM(CASE WHEN endpoint = 'feishu/chat' THEN 1 ELSE 0 END), 0) AS feishu,
+                   COALESCE(AVG(total_ms), 0) AS avg_ms
+            FROM audit_event
+            WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)
+            GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
+            ORDER BY day
+            """)
+    List<Map<String, Object>> dailyTrend(@Param("days") int days);
+
+    /** 近 N 天热门问题 Top-N */
+    @Select("""
+            SELECT query, COUNT(*) AS cnt
+            FROM audit_event
+            WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)
+              AND query IS NOT NULL AND query <> ''
+            GROUP BY query
+            ORDER BY cnt DESC
+            LIMIT #{limit}
+            """)
+    List<Map<String, Object>> topQueries(@Param("days") int days, @Param("limit") int limit);
+
+    /** 近 N 天路由分布（category 为空归入"未知"） */
+    @Select("""
+            SELECT COALESCE(NULLIF(category, ''), '未知') AS route, COUNT(*) AS cnt
+            FROM audit_event
+            WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)
+            GROUP BY COALESCE(NULLIF(category, ''), '未知')
+            ORDER BY cnt DESC
+            """)
+    List<Map<String, Object>> routeDistribution(@Param("days") int days);
+
+    /** 近 N 天员工活跃度 Top-N（按 user 聚合问答量与均耗时） */
+    @Select("""
+            SELECT `user` AS user_name, COUNT(*) AS cnt, COALESCE(AVG(total_ms), 0) AS avg_ms
+            FROM audit_event
+            WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY)
+              AND `user` IS NOT NULL AND `user` <> ''
+            GROUP BY `user`
+            ORDER BY cnt DESC
+            LIMIT #{limit}
+            """)
+    List<Map<String, Object>> employeeActivity(@Param("days") int days, @Param("limit") int limit);
 }

@@ -27,6 +27,14 @@ public class AdminAuditController {
         return stats != null ? ApiResponse.ok(stats) : ApiResponse.fail("业务库未连接，请检查 MySQL 服务");
     }
 
+    /** 数据看板：近 N 天趋势 + 热门问题 + 路由分布 + 员工活跃度 */
+    @GetMapping("/dashboard")
+    public ApiResponse<AuditQueryService.DashboardStats> dashboard(
+            @RequestParam(defaultValue = "14") int days) {
+        AuditQueryService.DashboardStats stats = auditQueryService.dashboard(days);
+        return stats != null ? ApiResponse.ok(stats) : ApiResponse.fail("业务库未连接，请检查 MySQL 服务");
+    }
+
     @GetMapping("/events")
     public ApiResponse<AuditQueryService.PageResult<AuditQueryService.AuditEventView>> events(
             @RequestParam(defaultValue = "1") int page,
