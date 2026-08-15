@@ -111,6 +111,10 @@ public class AgentOrchestrator {
             return new AgentAnswer(chatDirect(query, runtime), List.of(), route, false, 0, false,
                     runtime != null ? runtime.employeeId() : 0);
         }
+        if ("CLARIFY".equals(route) && CLARIFY_GUARD.matcher(query).find()) {
+            return new AgentAnswer(clarify(query), List.of(), route, false, 0, false,
+                    runtime != null ? runtime.employeeId() : 0);
+        }
         // KNOWLEDGE_QA：确定性预检索——不依赖模型是否调用工具
         // （咨询类问题模型常跳过工具凭自身知识作答，产生引用幻觉；预检索后检索空则直接兜底。
         //   例外：员工有启用 MCP 技能时放行 Agent 工具循环，让业务工具获得回答机会。
@@ -514,6 +518,13 @@ public class AgentOrchestrator {
         String route = route(query);
         log.info("[Agent] 路由: {} → {}", query, route);
         handler.onRoute(route); // 先于任何 token 同步触发，保证前端先知道路由
+        if ("CLARIFY".equals(route) && CLARIFY_GUARD.matcher(query).find()) {
+            String clarifyAnswer = clarify(query);
+            handler.onToken(clarifyAnswer);
+            handler.onComplete(route, List.of(), false, 0, false,
+                    runtime != null ? runtime.employeeId() : 0);
+            return;
+        }
         if ("CHAT".equals(route)) {
             String prompt = chatPrompt(query, runtime);
             streamingChatModel.chat(prompt, new StreamingChatResponseHandler() {
@@ -694,10 +705,23 @@ public class AgentOrchestrator {
 
     private static final String ROUTER_PROMPT = """
             你是意图路由分类器。判断用户输入属于哪一类，只输出一个词，不要输出任何其他内容：
+            - CLARIFY：问题过于简短、指代不明或多义，无法确定用户想问什么，必须先追问澄清
+              （如只输入"年假"、"这个怎么用"、"怎么办"、"社保"）
             - KNOWLEDGE_QA：知识性提问，需要检索资料库或知识图谱才能回答
             - CHAT：闲聊、寒暄、询问你的能力、简单确认、打招呼、询问天气/时间等实时信息（资料库无法回答）
 
             用户输入：
+            """;
+
+    /** 追问澄清确定性门卫：防小模型过度触发——仅短问句或含指代词/笼统词时允许 CLARIFY */
+    private static final java.util.regex.Pattern CLARIFY_GUARD =
+            java.util.regex.Pattern.compile("这个|那个|它|他|她|怎么办|怎么弄|怎么用|什么意思|^.{1,8}$");
+
+    /** 澄清问题生成（一条追问 + 最多两个猜测方向，帮用户点选） */
+    private static final String CLARIFY_PROMPT = """
+            用户的问题太简短或指代不明，无法确定意图。请生成一句自然的追问来澄清，
+            追问中给出 1-2 个可能的猜测方向（用"是想问A还是B？"句式，方向要具体）。
+            只输出追问本身，不要其他内容。\n用户输入：%s
             """;
 
     private String route(String query) {
@@ -707,12 +731,28 @@ public class AgentOrchestrator {
             if (cleaned.contains("CHAT")) {
                 return "CHAT";
             }
+            if (cleaned.contains("CLARIFY")) {
+                return "CLARIFY";
+            }
             return "KNOWLEDGE_QA";
         } catch (Exception e) {
             // 路由失败默认走 Agent 工具循环（Agent 也能处理闲聊，只是多一次决策开销）
             log.warn("[Agent] 路由调用失败，默认 KNOWLEDGE_QA: {}", e.getMessage());
             return "KNOWLEDGE_QA";
         }
+    }
+
+    /** 生成追问澄清（门卫放行时才调用；LLM 失败回退固定追问句式） */
+    private String clarify(String query) {
+        try {
+            String out = reasonerModel.chat(CLARIFY_PROMPT.formatted(query));
+            if (out != null && !out.isBlank() && !out.equalsIgnoreCase(query)) {
+                return out.trim();
+            }
+        } catch (Exception e) {
+            log.warn("[Agent] 澄清生成失败，用固定句式: {}", e.getMessage());
+        }
+        return "您的问题我还没完全理解，能再具体说说想问哪方面吗？";
     }
 
     // ==================== 闲聊直达 ====================
