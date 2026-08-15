@@ -326,6 +326,42 @@ public class FeishuClient {
                 : config.baseUrl() + "/docx/" + documentId;
     }
 
+    /**
+     * 把用户加成云文档编辑者（tenant_readable 只给组织"可读"，不含编辑）。
+     * POST drive/v1/permissions/{token}/members?type=docx，perm=full_access；
+     * 失败静默（文档仍可读，仅不能在线编辑）。
+     */
+    public boolean addDocEditor(String documentId, String openId) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return false;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "member_type", "openid",
+                    "member_id", openId,
+                    "perm", "full_access"));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/drive/v1/permissions/"
+                                    + documentId + "/members?type=docx"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            boolean ok = resp.statusCode() == 200
+                    && objectMapper.readTree(resp.body()).path("code").asInt() == 0;
+            if (!ok) {
+                log.warn("[飞书] 文档编辑者添加失败: {}", truncate(resp.body(), 150));
+            }
+            return ok;
+        } catch (Exception e) {
+            log.warn("[飞书] 文档编辑者添加异常: {}", e.getMessage());
+            return false;
+        }
+    }
+
     // ==================== 文件消息（文档生成定稿推送 + 转发文件下载） ====================
 
     /** 下载资源（用户转发给机器人的文件/图片）→ 字节 + 推测文件名 */

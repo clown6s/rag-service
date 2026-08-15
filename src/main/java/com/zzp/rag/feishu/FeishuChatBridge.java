@@ -183,11 +183,14 @@ public class FeishuChatBridge {
             if (auditUser != null) {
                 org.slf4j.MDC.put(AuditEvent.MDC_USER_KEY, auditUser);
             }
+            // 云文档编辑者授权：定稿时把发起用户加成文档编辑者（tenant_readable 仅可读）
+            docWizardService.setEditorHint(auditUser);
             Long agentId = config.defaultAgentId() > 0 ? config.defaultAgentId() : null;
             AgentOrchestrator.AgentAnswer answer;
             try {
                 answer = orchestrator.answer(chatId, query, agentId);
             } finally {
+                docWizardService.clearEditorHint();
                 if (prevMdcUser != null) {
                     org.slf4j.MDC.put(AuditEvent.MDC_USER_KEY, prevMdcUser);
                 } else {
@@ -570,7 +573,7 @@ public class FeishuChatBridge {
                 worker.execute(() -> {
                     try {
                         com.zzp.rag.agent.DocWizardService.FormResult result =
-                                docWizardService.submitForm(key, docType, title, points, tone, issuer);
+                                docWizardService.submitForm(key, docType, title, points, tone, issuer, operator);
                         String url = result.cloudUrl();
                         String studioUrl = studioBaseUrl + "/studio?doc=" + result.docId();
                         if (url != null) {

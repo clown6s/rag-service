@@ -69,6 +69,9 @@ public class DocWizardService {
     /** 员工部门（落款默认值来源；由编排器在员工解析后注入） */
     private final ThreadLocal<String> deptHint = new ThreadLocal<>();
 
+    /** 发起用户 open_id（云文档编辑者授权用；由飞书桥在编排前注入） */
+    private final ThreadLocal<String> editorHint = new ThreadLocal<>();
+
     /** 定稿 docx 直出飞书云文档（在线协作）；false = 文件消息 */
     @Value("${rag.doc.cloud-doc:true}")
     private boolean cloudDocEnabled;
@@ -88,6 +91,17 @@ public class DocWizardService {
 
     public void clearDeptHint() {
         deptHint.remove();
+    }
+
+    /** 云文档编辑者授权：发起用户 open_id（飞书桥在编排前注入） */
+    public void setEditorHint(String openId) {
+        if (openId != null && !openId.isBlank()) {
+            editorHint.set(openId);
+        }
+    }
+
+    public void clearEditorHint() {
+        editorHint.remove();
     }
 
     // ==================== 触发与取消 ====================
@@ -123,11 +137,11 @@ public class DocWizardService {
         return !isActive(key) && query != null && TRIGGER.matcher(query).find();
     }
 
-    /** 表单一次性提交：生成全文 → 云文档直出 → 注册预览状态（后续文本消息可继续修改/定稿） */
+    /** 表单一次性提交：生成全文 → 云文档直出（发起者授编辑权）→ 注册预览状态（后续文本消息可继续修改/定稿） */
     public FormResult submitForm(String key, String docType, String title, String points,
-                                 String tone, String issuer) {
+                                 String tone, String issuer, String editorOpenId) {
         String content = docAssistant.generateContent(docType, title, points, tone, issuer);
-        String url = publishCloudDoc(title, content);
+        String url = publishCloudDoc(title, content, editorOpenId);
         State s = new State();
         s.stage = Stage.PREVIEW;
         s.docType = docType == null || docType.isBlank() ? "通用" : docType;
@@ -153,8 +167,13 @@ public class DocWizardService {
         return docId == null ? null : studioDocs.get(docId);
     }
 
-    /** 云文档直出：创建 + 写入（标题去重 + 缩进排版）+ 落款右对齐 + 组织内可读 → 链接；失败返回 null */
+    /** 云文档直出：创建 + 写入（标题去重 + 缩进排版）+ 落款右对齐 + 组织内可读 + 发起者编辑权 → 链接；失败返回 null */
     public String publishCloudDoc(String title, String content) {
+        return publishCloudDoc(title, content, editorHint.get());
+    }
+
+    /** 同上，显式指定编辑者 open_id（表单提交路径）；null 则仅组织内可读 */
+    public String publishCloudDoc(String title, String content, String editorOpenId) {
         try {
             String docId = feishuClient.createCloudDoc(title);
             if (docId == null) {
@@ -171,6 +190,9 @@ public class DocWizardService {
                 }
             }
             feishuClient.makeCloudDocOrgReadable(docId);
+            if (editorOpenId != null && !editorOpenId.isBlank()) {
+                feishuClient.addDocEditor(docId, editorOpenId);
+            }
             return feishuClient.cloudDocUrl(docId);
         } catch (Exception e) {
             log.warn("[文档向导] 云文档直出失败: {}", e.getMessage());
@@ -279,6 +301,10 @@ public class DocWizardService {
                             }
                         }
                         feishuClient.makeCloudDocOrgReadable(docId);
+                        String editor = editorHint.get();
+                        if (editor != null && !editor.isBlank()) {
+                            feishuClient.addDocEditor(docId, editor);
+                        }
                         String url = feishuClient.cloudDocUrl(docId);
                         log.info("[文档向导] 云文档已创建 {}", url);
                         states.remove(key);   // 定稿即退出向导
