@@ -318,6 +318,11 @@ public class DocWizardService {
         if (m.find()) {
             return m.group(1);
         }
+        // 短输入且无句读：整体即标题（"2026年9月工作总结"）
+        String stripped = query.strip();
+        if (stripped.length() <= 20 && !stripped.matches(".*[，。；、\\n].*")) {
+            return stripped;
+        }
         return null;
     }
 
