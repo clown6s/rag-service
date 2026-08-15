@@ -133,7 +133,7 @@ public class DocWizardService {
             return switch (s.stage) {
                 case COLLECT -> collect(s, query, scopeExpr);
                 case CONFIRM -> confirm(s, query, scopeExpr);
-                case PREVIEW -> preview(s, query, scopeExpr);
+                case PREVIEW -> preview(s, key, query, scopeExpr);
             };
         } catch (Exception e) {
             log.error("[文档向导] 处理失败: {}", e.getMessage(), e);
@@ -181,7 +181,7 @@ public class DocWizardService {
     }
 
     /** 预览/修改循环：定稿词 → 出文件；其余全部视为修改指令 */
-    private WizardResult preview(State s, String query, String scopeExpr) {
+    private WizardResult preview(State s, String key, String query, String scopeExpr) {
         String q = query.strip();
         if (isFinalizeWord(q)) {
             String fileName = safeFileTitle(s.title);
@@ -205,6 +205,7 @@ public class DocWizardService {
                         feishuClient.makeCloudDocOrgReadable(docId);
                         String url = feishuClient.cloudDocUrl(docId);
                         log.info("[文档向导] 云文档已创建 {}", url);
+                        states.remove(key);   // 定稿即退出向导
                         return new WizardResult(
                                 "文档已创建为飞书云文档（在线可编辑）：\n" + url
                                         + "\n\n文档就此定稿，有需要随时再找我。",
@@ -215,6 +216,7 @@ public class DocWizardService {
                 }
             }
             String reply = "已按预览生成文件。文档就此定稿，有需要随时再找我。";
+            states.remove(key);   // 定稿即退出向导（后续消息回普通问答）
             return new WizardResult(reply, "DOC_WIZARD", fileName + "." + s.format, file);
         }
         // 修改指令：可能包含格式/落款切换 + 内容修改 + 知识库引用
