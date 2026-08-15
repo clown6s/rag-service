@@ -432,8 +432,11 @@ public class DocWizardService {
         return head + content;
     }
 
-    /** markdown → 飞书云文档 blocks（2 文本 / 3 一级标题 / 4 二级标题 / 12 有序 / 13 无序） */
+    /** markdown → 飞书云文档 blocks（2 文本 / 3 一级标题 / 4 二级标题 / 12 无序 / 13 有序）。
+     *  排版：正文段落前置两个全角空格（首行缩进，API 无缩进属性）；落款行尾缀两个全角空格
+     *  （右对齐留边距，贴边观感过远） */
     private java.util.List<java.util.Map<String, Object>> toBlocks(String markdown) {
+        java.util.Set<String> signoff = signoffLines(markdown);
         java.util.List<java.util.Map<String, Object>> blocks = new java.util.ArrayList<>();
         for (String line : markdown.split("\n", -1)) {
             String s = line.strip();
@@ -456,7 +459,7 @@ public class DocWizardService {
                 text = s.replaceFirst("^[-*•]\\s*", "");
             } else {
                 type = 2;
-                text = s;
+                text = signoff.contains(s) ? s + "\u3000\u3000" : "\u3000\u3000" + s;
             }
             String key = switch (type) {
                 case 3 -> "heading1";
@@ -470,6 +473,27 @@ public class DocWizardService {
                             java.util.Map.of("content", text))))));
         }
         return blocks;
+    }
+
+    /** 落款行集合（末 4 行内短中文行/日期行） */
+    private java.util.Set<String> signoffLines(String markdown) {
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        for (String line : markdown.split("\n", -1)) {
+            String s = line.strip();
+            if (!s.isEmpty() && !s.startsWith("---")) {
+                lines.add(s);
+            }
+        }
+        java.util.Set<String> signoff = new java.util.HashSet<>();
+        for (int i = Math.max(0, lines.size() - 4); i < lines.size(); i++) {
+            String s = lines.get(i);
+            if (s.matches("[\\u4e00-\\u9fa5]{2,12}")
+                    || s.matches("\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}")
+                    || s.matches("\\d{4}年\\d{1,2}月\\d{1,2}日")) {
+                signoff.add(s);
+            }
+        }
+        return signoff;
     }
 
     /** 落款行的块下标（末 4 行内短中文行/日期行；与 toBlocks 同序跳过规则） */
