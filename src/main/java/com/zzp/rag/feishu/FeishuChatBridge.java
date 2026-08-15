@@ -254,29 +254,27 @@ public class FeishuChatBridge {
     }
 
     /**
-     * 文档表单卡片：input/select 输入框一次收集全部槽位，点「生成文档」提交
-     * （card.action.trigger 的 form_value 回传）→ 云文档直出。
+     * 文档表单卡片（卡片 JSON 2.0）：input/select 必须嵌在 form 容器内才渲染，
+     * 提交按钮放在容器内用 form_action_type=submit，点击回传 action.form_value。
      * 纯文本无图标；替代原文字多轮追问。
      */
     private String buildDocFormCard() {
-        java.util.List<Object> elements = new java.util.ArrayList<>();
-        elements.add(java.util.Map.of("tag", "markdown",
-                "content", "请填写以下信息，点【生成文档】即可直接产出飞书云文档："));
-        elements.add(java.util.Map.of("tag", "select_static",
+        java.util.List<Object> formChildren = new java.util.ArrayList<>();
+        formChildren.add(java.util.Map.of("tag", "select_static",
                 "name", "docType",
-                "label", java.util.Map.of("tag", "plain_text", "content", "文档类型"),
+                "placeholder", java.util.Map.of("tag", "plain_text", "content", "文档类型"),
                 "initial_option", "通知",
                 "options", java.util.List.of("通知", "报告", "方案", "周报", "会议纪要", "制度办法", "通用文档")
                         .stream().map(t -> java.util.Map.of(
-                                "label", java.util.Map.of("tag", "plain_text", "content", t),
+                                "text", java.util.Map.of("tag", "plain_text", "content", t),
                                 "value", t)).toList()));
-        elements.add(java.util.Map.of("tag", "input",
+        formChildren.add(java.util.Map.of("tag", "input",
                 "name", "title",
                 "required", true,
                 "label", java.util.Map.of("tag", "plain_text", "content", "标题"),
                 "placeholder", java.util.Map.of("tag", "plain_text",
                         "content", "如：关于五一假期安排的通知")));
-        elements.add(java.util.Map.of("tag", "input",
+        formChildren.add(java.util.Map.of("tag", "input",
                 "name", "points",
                 "input_type", "multiline_text",   // 多行输入框：tag 必须是 input（textarea 会被飞书拒 11310）
                 "rows", 4,
@@ -284,32 +282,38 @@ public class FeishuChatBridge {
                 "label", java.util.Map.of("tag", "plain_text", "content", "内容要点"),
                 "placeholder", java.util.Map.of("tag", "plain_text",
                         "content", "每行一条要点；可引用知识库文档，如「参考《员工年休假管理办法》」")));
-        elements.add(java.util.Map.of("tag", "select_static",
+        formChildren.add(java.util.Map.of("tag", "select_static",
                 "name", "tone",
-                "label", java.util.Map.of("tag", "plain_text", "content", "语气"),
+                "placeholder", java.util.Map.of("tag", "plain_text", "content", "语气"),
                 "initial_option", "正式公文语气",
                 "options", java.util.List.of("正式公文语气", "简洁直接", "亲切自然")
                         .stream().map(t -> java.util.Map.of(
-                                "label", java.util.Map.of("tag", "plain_text", "content", t),
+                                "text", java.util.Map.of("tag", "plain_text", "content", t),
                                 "value", t)).toList()));
-        elements.add(java.util.Map.of("tag", "input",
+        formChildren.add(java.util.Map.of("tag", "input",
                 "name", "issuer",
                 "label", java.util.Map.of("tag", "plain_text", "content", "落款"),
                 "placeholder", java.util.Map.of("tag", "plain_text",
                         "content", "如：行政部（不填默认公司）")));
-        elements.add(java.util.Map.of("tag", "hr"));
-        elements.add(java.util.Map.of("tag", "action", "actions", java.util.List.of(
-                java.util.Map.of("tag", "button",
-                        "text", java.util.Map.of("tag", "plain_text", "content", "生成文档"),
-                        "type", "primary",
-                        "value", java.util.Map.of("action", "doc_form_submit")))));
+        formChildren.add(java.util.Map.of("tag", "button",
+                "text", java.util.Map.of("tag", "plain_text", "content", "生成文档"),
+                "type", "primary",
+                "form_action_type", "submit",
+                "name", "submit_btn",
+                "value", java.util.Map.of("action", "doc_form_submit")));
+
+        java.util.List<Object> elements = new java.util.ArrayList<>();
+        elements.add(java.util.Map.of("tag", "markdown",
+                "content", "请填写以下信息，点【生成文档】即可直接产出飞书云文档："));
+        elements.add(java.util.Map.of("tag", "form", "name", "doc_form", "elements", formChildren));
 
         java.util.Map<String, Object> card = new java.util.LinkedHashMap<>();
-        card.put("config", java.util.Map.of("wide_screen_mode", true));
+        card.put("schema", "2.0");
+        card.put("config", java.util.Map.of("update_multi", true));
         card.put("header", java.util.Map.of(
                 "title", java.util.Map.of("tag", "plain_text", "content", "帮我写文档"),
                 "template", "blue"));
-        card.put("elements", elements);
+        card.put("body", java.util.Map.of("elements", elements));
         try {
             return objectMapper.writeValueAsString(card);
         } catch (Exception e) {
@@ -362,6 +366,9 @@ public class FeishuChatBridge {
                                  java.util.Map<String, Object> formValue,
                                  String openMessageId, String openChatId, String operator) {
         String action = value != null ? String.valueOf(value.getOrDefault("action", "")) : "";
+        if (action.isBlank() && formValue != null && !formValue.isEmpty()) {
+            action = "doc_form_submit";   // 表单提交按钮可能不带 value，按 form_value 判定
+        }
         log.info("[飞书] 卡片动作 {} messageId={} chat={}", action, openMessageId, openChatId);
         switch (action) {
             case "helpful", "unhelpful" -> {
