@@ -40,6 +40,8 @@ public class AgentOrchestrator {
     private final RetrievalPipeline retrievalPipeline;
     private final com.zzp.rag.skill.registry.SkillRegistryToolProvider skillRegistryToolProvider;
     private final EmployeeContext employeeContext;
+    private final com.zzp.rag.workflow.SopRegistry sopRegistry;
+    private final com.zzp.rag.workflow.SopEngine sopEngine;
 
     /** 答案校验开关：生成后由小模型对照检索资料逐句核查，删除无依据内容（编造的最后防线） */
     @Value("${rag.agent.verify.enabled:true}")
@@ -54,7 +56,9 @@ public class AgentOrchestrator {
             AgentTools agentTools,
             RetrievalPipeline retrievalPipeline,
             com.zzp.rag.skill.registry.SkillRegistryToolProvider skillRegistryToolProvider,
-            EmployeeContext employeeContext) {
+            EmployeeContext employeeContext,
+            com.zzp.rag.workflow.SopRegistry sopRegistry,
+            com.zzp.rag.workflow.SopEngine sopEngine) {
         this.chatModel = chatModel;
         this.streamingChatModel = streamingChatModel;
         this.reasonerModel = reasonerModel;
@@ -64,6 +68,8 @@ public class AgentOrchestrator {
         this.retrievalPipeline = retrievalPipeline;
         this.skillRegistryToolProvider = skillRegistryToolProvider;
         this.employeeContext = employeeContext;
+        this.sopRegistry = sopRegistry;
+        this.sopEngine = sopEngine;
     }
 
     public record AgentAnswer(String answer, List<String> sources, String route,
@@ -83,9 +89,18 @@ public class AgentOrchestrator {
     // ==================== 非流式 ====================
 
     public AgentAnswer answer(String conversationId, String query, Long agentId) {
+        EmployeeContext.EmployeeRuntime runtime = employeeContext.resolve(agentId);
+        // L2 SOP 优先：确定性流程命中直接执行（该严格的地方严格；失败回退 L3 常规路径）
+        com.zzp.rag.workflow.SopDefinition sop = sopRegistry.match(query);
+        if (sop != null) {
+            try {
+                return runSop(sop, query, runtime);
+            } catch (Exception e) {
+                log.warn("[SOP] {} 执行失败，回退常规路径: {}", sop.code(), e.getMessage());
+            }
+        }
         String route = route(query);
         log.info("[Agent] 路由: {} → {}", query, route);
-        EmployeeContext.EmployeeRuntime runtime = employeeContext.resolve(agentId);
         if ("CHAT".equals(route)) {
             return new AgentAnswer(chatDirect(query, runtime), List.of(), route, false, 0, false,
                     runtime != null ? runtime.employeeId() : 0);
@@ -142,6 +157,19 @@ public class AgentOrchestrator {
             com.zzp.rag.mcp.McpCallTracker.clear();
             agentTools.clear();
         }
+    }
+
+    /** L2 SOP 执行：状态机跑完 → 校验层核查（SOP 同样吃防编造）→ 组装结果 */
+    private AgentAnswer runSop(com.zzp.rag.workflow.SopDefinition sop, String query,
+                               EmployeeContext.EmployeeRuntime runtime) {
+        log.info("[SOP] 执行 {}（{}）", sop.code(), sop.name());
+        com.zzp.rag.workflow.SopEngine.SopResult result = sopEngine.execute(
+                sop, query, runtime != null ? runtime.scopeExpr() : null);
+        String answer = verify(result.answer(), result.retrievalContext(), false);
+        List<String> sources = result.sources().isEmpty()
+                ? java.util.List.of() : result.sources();
+        return new AgentAnswer(answer, sources, "SOP", false, 0, false,
+                runtime != null ? runtime.employeeId() : 0);
     }
 
     /** 把确定性检索资料拼进用户消息（Agent 直接基于资料回答，工具仅作补充）；
@@ -450,10 +478,24 @@ public class AgentOrchestrator {
     // ==================== 流式 ====================
 
     public void answerStream(String conversationId, String query, Long agentId, AgentStreamHandler handler) {
+        EmployeeContext.EmployeeRuntime runtime = employeeContext.resolve(agentId);
+        // L2 SOP 优先（同非流式）：同步执行后分块回放，保持流式观感
+        com.zzp.rag.workflow.SopDefinition sop = sopRegistry.match(query);
+        if (sop != null) {
+            try {
+                AgentAnswer sopAnswer = runSop(sop, query, runtime);
+                handler.onRoute("SOP");
+                emitChunks(StreamTokenFixer.fixFull(sopAnswer.answer()), handler);
+                handler.onComplete("SOP", sopAnswer.sources(), false, 0, false,
+                        runtime != null ? runtime.employeeId() : 0);
+                return;
+            } catch (Exception e) {
+                log.warn("[SOP] {} 流式执行失败，回退常规路径: {}", sop.code(), e.getMessage());
+            }
+        }
         String route = route(query);
         log.info("[Agent] 路由: {} → {}", query, route);
         handler.onRoute(route); // 先于任何 token 同步触发，保证前端先知道路由
-        EmployeeContext.EmployeeRuntime runtime = employeeContext.resolve(agentId);
         if ("CHAT".equals(route)) {
             String prompt = chatPrompt(query, runtime);
             streamingChatModel.chat(prompt, new StreamingChatResponseHandler() {
