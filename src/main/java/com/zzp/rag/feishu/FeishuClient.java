@@ -224,12 +224,12 @@ public class FeishuClient {
      * blocks 元素：{"block_type":2,"text":{"elements":[{"text_run":{"content":"..."}}]}}
      * 类型：2=文本 3=一级标题 4=二级标题 12=有序列表 13=无序列表
      */
-    public boolean writeCloudDocBlocks(String documentId,
-                                       java.util.List<java.util.Map<String, Object>> blocks) {
+    public java.util.List<String> writeCloudDocBlocks(String documentId,
+                                                      java.util.List<java.util.Map<String, Object>> blocks) {
         try {
             String token = tenantAccessToken();
             if (token == null) {
-                return false;
+                return null;
             }
             String body = objectMapper.writeValueAsString(java.util.Map.of(
                     "children", blocks,
@@ -243,14 +243,49 @@ public class FeishuClient {
                     .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            JsonNode node = objectMapper.readTree(resp.body());
+            if (resp.statusCode() != 200 || node.path("code").asInt() != 0) {
+                log.warn("[飞书] 云文档写入失败: {}", truncate(resp.body(), 200));
+                return null;
+            }
+            java.util.List<String> ids = new java.util.ArrayList<>();
+            node.path("data").path("children").forEach(ch ->
+                    ids.add(ch.path("block_id").asText("")));
+            return ids;
+        } catch (Exception e) {
+            log.warn("[飞书] 云文档写入异常: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 块对齐（1=左 2=居中 3=右；fields 必须含 1 即 align 字段，实测数值枚举） */
+    public boolean updateBlockAlign(String documentId, String blockId, int align) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return false;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "update_text_style", java.util.Map.of(
+                            "style", java.util.Map.of("align", align),
+                            "fields", java.util.List.of(1))));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/docx/v1/documents/"
+                                    + documentId + "/blocks/" + blockId))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .method("PATCH", HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             boolean ok = resp.statusCode() == 200
                     && objectMapper.readTree(resp.body()).path("code").asInt() == 0;
             if (!ok) {
-                log.warn("[飞书] 云文档写入失败: {}", truncate(resp.body(), 200));
+                log.warn("[飞书] 块对齐失败: {}", truncate(resp.body(), 150));
             }
             return ok;
         } catch (Exception e) {
-            log.warn("[飞书] 云文档写入异常: {}", e.getMessage());
+            log.warn("[飞书] 块对齐异常: {}", e.getMessage());
             return false;
         }
     }

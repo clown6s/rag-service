@@ -190,8 +190,18 @@ public class DocWizardService {
             if ("docx".equals(s.format) && cloudDocEnabled) {
                 try {
                     String docId = feishuClient.createCloudDoc(s.title);
-                    if (docId != null && feishuClient.writeCloudDocBlocks(docId,
-                            toBlocks(s.content + "\n\n" + buildFooter(s)))) {
+                    java.util.List<String> blockIds = docId != null
+                            ? feishuClient.writeCloudDocBlocks(docId,
+                                    toBlocks(s.content + "\n\n" + buildFooter(s)))
+                            : null;
+                    if (docId != null && blockIds != null && !blockIds.isEmpty()) {
+                        // 排版：首块（文档标题行）居中，落款行右对齐
+                        feishuClient.updateBlockAlign(docId, blockIds.get(0), 2);
+                        for (int idx : signoffIndexes(s.content + "\n\n" + buildFooter(s))) {
+                            if (idx > 0 && idx < blockIds.size()) {
+                                feishuClient.updateBlockAlign(docId, blockIds.get(idx), 3);
+                            }
+                        }
                         feishuClient.makeCloudDocOrgReadable(docId);
                         String url = feishuClient.cloudDocUrl(docId);
                         log.info("[文档向导] 云文档已创建 {}", url);
@@ -460,6 +470,33 @@ public class DocWizardService {
                             java.util.Map.of("content", text))))));
         }
         return blocks;
+    }
+
+    /** 落款行的块下标（末 4 行内短中文行/日期行；与 toBlocks 同序跳过规则） */
+    private java.util.List<Integer> signoffIndexes(String markdown) {
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        for (String line : markdown.split("\n", -1)) {
+            String s = line.strip();
+            if (!s.isEmpty() && !s.startsWith("---")) {
+                lines.add(s);
+            }
+        }
+        java.util.Set<String> signoff = new java.util.HashSet<>();
+        for (int i = Math.max(0, lines.size() - 4); i < lines.size(); i++) {
+            String s = lines.get(i);
+            if (s.matches("[\\u4e00-\\u9fa5]{2,12}")
+                    || s.matches("\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}")
+                    || s.matches("\\d{4}年\\d{1,2}月\\d{1,2}日")) {
+                signoff.add(s);
+            }
+        }
+        java.util.List<Integer> indexes = new java.util.ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            if (signoff.contains(lines.get(i))) {
+                indexes.add(i);
+            }
+        }
+        return indexes;
     }
 
     private String buildFooter(State s) {
