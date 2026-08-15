@@ -43,7 +43,9 @@ public class SopRegistry {
             new SopDefinition(
                     "leave_apply",
                     "请假申请流程",
-                    List.of("请假", "休假申请", "年假怎么请", "事假", "病假申请", "请假流程"),
+                    // 收窄关键词：裸"请假"会截胡"帮我提交请假申请"类 OA 操作请求
+                    // （操作走 Agent 工具循环调 oa_leave_submit，流程咨询才走本 SOP）
+                    List.of("请假流程", "休假申请", "年假怎么请", "病假申请", "请假规定", "请假制度", "怎么请假"),
                     List.of(
                             new SopDefinition.SopStep("tool", "searchKnowledgeBase", null),
                             new SopDefinition.SopStep("llm", null,

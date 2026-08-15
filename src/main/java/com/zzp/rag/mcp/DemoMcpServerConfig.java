@@ -43,6 +43,7 @@ public class DemoMcpServerConfig {
 
     @Bean
     public io.modelcontextprotocol.server.McpSyncServer demoMcpServer(
+            @org.springframework.beans.factory.annotation.Qualifier("demoMcpTransportProvider")
             HttpServletSseServerTransportProvider provider) {
         McpServer.SyncSpecification spec = McpServer.sync(provider)
                 .serverInfo("rag-demo-mcp", "1.0.0")
@@ -72,6 +73,7 @@ public class DemoMcpServerConfig {
      *  用 ServletContextInitializer 直连注册（ServletRegistrationBean 在该场景未生效，历史坑） */
     @Bean
     public org.springframework.boot.web.servlet.ServletContextInitializer demoMcpServletInitializer(
+            @org.springframework.beans.factory.annotation.Qualifier("demoMcpTransportProvider")
             HttpServletSseServerTransportProvider provider) {
         return servletContext -> {
             jakarta.servlet.ServletRegistration.Dynamic registration =
