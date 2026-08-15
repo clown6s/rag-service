@@ -111,3 +111,16 @@ CREATE TABLE IF NOT EXISTS feedback_adopt (
   created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_query_hash (query_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='上下文飞轮：人工采纳的问答对';
+
+
+-- 文档级访问控制：grants 为空/未建记录 = 全员可见；否则仅授权员工可见
+-- grants JSON：["employee:2","employee:5"]（员工 id 列表）
+CREATE TABLE IF NOT EXISTS doc_acl (
+  id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+  doc_id     VARCHAR(128) NOT NULL COMMENT '文档唯一标识',
+  grants     VARCHAR(1024) NULL COMMENT '授权列表 JSON；NULL/[] = 不限制',
+  updated_by VARCHAR(64)  NULL COMMENT '最近操作人',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_doc (doc_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档级访问控制';

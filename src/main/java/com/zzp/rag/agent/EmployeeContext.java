@@ -55,11 +55,15 @@ public class EmployeeContext {
     private final ThreadLocal<String> toolScope = new ThreadLocal<>();
 
     public EmployeeContext(SkillService skillService, DigitalEmployeeService employeeService,
+                           com.zzp.rag.mysql.service.DocAclService docAclService,
                            ObjectMapper objectMapper) {
         this.skillService = skillService;
         this.employeeService = employeeService;
+        this.docAclService = docAclService;
         this.objectMapper = objectMapper;
     }
+
+    private final com.zzp.rag.mysql.service.DocAclService docAclService;
 
     // ==================== 绑定（编排器调用） ====================
 
@@ -125,7 +129,8 @@ public class EmployeeContext {
             boolean usable = v != null && v.status() == 1
                     && ("ONLINE".equals(v.lifecycle()) || "TESTING".equals(v.lifecycle()));
             EmployeeRuntime runtime = usable
-                    ? new EmployeeRuntime(v.id(), v.name(), v.systemPrompt(), buildScopeExpr(v.knowledgeScope()))
+                    ? new EmployeeRuntime(v.id(), v.name(), v.systemPrompt(),
+                            composeExpr(buildScopeExpr(v.knowledgeScope()), v.id()))
                     : null;
             resolveCache.put(id, new ResolveEntry(runtime, now));
             if (runtime != null) {
@@ -168,5 +173,23 @@ public class EmployeeContext {
             log.warn("[员工上下文] knowledgeScope 解析失败，按全量运行: {}", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 组合过滤表达式：知识范围（白名单）∩ 文档 ACL（黑名单）。
+     * 文档 ACL 采用 document_id not in [...] 排除式——无 ACL 记录的文档不受影响；
+     * 业务库不可用时 excludedDocIds 为空集，不产生限制（授权过宽优于服务不可用）。
+     */
+    private String composeExpr(String scopeExpr, long employeeId) {
+        java.util.List<String> excluded =
+                docAclService.excludedDocIds(employeeId);
+        if (excluded.isEmpty()) {
+            return scopeExpr;
+        }
+        List<String> ids = excluded.stream().map(id -> "\"" + id + "\"").toList();
+        String aclExpr = "document_id not in [" + String.join(", ", ids) + "]";
+        return scopeExpr == null || scopeExpr.isBlank()
+                ? aclExpr
+                : "(" + scopeExpr + ") and (" + aclExpr + ")";
     }
 }
