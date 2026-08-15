@@ -186,4 +186,82 @@ public class FeishuClient {
     private String truncate(String s, int max) {
         return s != null && s.length() > max ? s.substring(0, max) : s;
     }
+
+    // ==================== 文件消息（文档生成定稿推送） ====================
+
+    /** 上传文件到飞书素材库 → file_key（失败返回 null） */
+    public String uploadFile(String fileName, byte[] bytes) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return null;
+            }
+            String boundary = "----ragfeishu" + System.currentTimeMillis();
+            java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
+            writePart(body, boundary, "file_type", "stream");
+            writePart(body, boundary, "file_name", fileName);
+            body.write(("--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName + "\"\r\n"
+                    + "Content-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            body.write(bytes);
+            body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/im/v1/files"))
+                    .timeout(Duration.ofSeconds(30))
+                    .header("Authorization", "Bearer " + token)
+                    .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            JsonNode node = objectMapper.readTree(resp.body());
+            String fileKey = node.path("data").path("file_key").asText(null);
+            if (fileKey == null) {
+                log.warn("[飞书] 文件上传失败: {}", truncate(resp.body(), 200));
+                return null;
+            }
+            return fileKey;
+        } catch (Exception e) {
+            log.warn("[飞书] 文件上传异常: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private void writePart(java.io.ByteArrayOutputStream out, String boundary, String name, String value)
+            throws java.io.IOException {
+        out.write(("--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n"
+                + value + "\r\n").getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** 向会话发送文件消息（file_key 来自 uploadFile；失败返回 false） */
+    public boolean sendFileMessage(String chatId, String fileKey) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return false;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "receive_id", chatId,
+                    "msg_type", "file",
+                    "content", objectMapper.writeValueAsString(java.util.Map.of("file_key", fileKey))));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/im/v1/messages?receive_id_type=chat_id"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            boolean ok = resp.statusCode() == 200
+                    && objectMapper.readTree(resp.body()).path("code").asInt() == 0;
+            if (!ok) {
+                log.warn("[飞书] 文件消息发送失败: {}", truncate(resp.body(), 200));
+            }
+            return ok;
+        } catch (Exception e) {
+            log.warn("[飞书] 文件消息发送异常: {}", e.getMessage());
+            return false;
+        }
+    }
 }

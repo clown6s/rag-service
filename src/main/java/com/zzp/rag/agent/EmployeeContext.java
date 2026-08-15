@@ -27,7 +27,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class EmployeeContext {
 
     /** 员工运行时快照：persona 人设文本 + scopeExpr 检索过滤表达式（Milvus 布尔表达式） */
-    public record EmployeeRuntime(long employeeId, String name, String persona, String scopeExpr) {
+    public record EmployeeRuntime(long employeeId, String name, String persona, String scopeExpr,
+                                  String dept) {
         public boolean hasPersona() {
             return persona != null && !persona.isBlank();
         }
@@ -130,7 +131,8 @@ public class EmployeeContext {
                     && ("ONLINE".equals(v.lifecycle()) || "TESTING".equals(v.lifecycle()));
             EmployeeRuntime runtime = usable
                     ? new EmployeeRuntime(v.id(), v.name(), v.systemPrompt(),
-                            composeExpr(buildScopeExpr(v.knowledgeScope()), v.id()))
+                            composeExpr(buildScopeExpr(v.knowledgeScope()), v.id()),
+                            v.dept())
                     : null;
             resolveCache.put(id, new ResolveEntry(runtime, now));
             if (runtime != null) {

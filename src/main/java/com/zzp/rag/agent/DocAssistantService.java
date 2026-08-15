@@ -49,6 +49,11 @@ public class DocAssistantService {
         this.chatModel = chatModel;
     }
 
+    /** 对话向导直接复用主力模型（生成/修改全文） */
+    public ChatModel getChatModel() {
+        return chatModel;
+    }
+
     /** 生成文档：LLM 出正文 → docx */
     public byte[] generateDocx(String docType, String title, String points, String tone) {
         String prompt = GENERATE_PROMPT.formatted(
@@ -82,6 +87,79 @@ public class DocAssistantService {
     /** 处理结果 → docx（摘要附在文末） */
     public byte[] toDocx(String title, String body, String summary) {
         return buildDocx(title, body + "\n\n---\n\n" + summary);
+    }
+
+    /** 按格式输出文件字节（docx/pdf/md/txt） */
+    public byte[] toFile(String format, String title, String body, String footer) {
+        String full = footer == null || footer.isBlank() ? body : body + "\n\n" + footer;
+        return switch (format == null ? "docx" : format.toLowerCase()) {
+            case "pdf" -> toPdf(title, full);
+            case "md" -> (("# " + title + "\n\n") + full).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            case "txt" -> (title + "\n\n" + full).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            default -> buildDocx(title, full);
+        };
+    }
+
+    /** 文本 → PDF（OpenPDF；CJK 字体：Windows 系统黑体，部署 Linux 换 Noto Sans SC） */
+    private byte[] toPdf(String title, String markdown) {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            com.lowagie.text.Document doc = new com.lowagie.text.Document();
+            com.lowagie.text.pdf.PdfWriter.getInstance(doc, out);
+            doc.open();
+            String[] fontCandidates = {
+                    "C:/Windows/Fonts/msyh.ttc",      // 微软雅黑
+                    "C:/Windows/Fonts/simhei.ttf",    // 黑体
+                    "C:/Windows/Fonts/simsun.ttc",    // 宋体
+                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",   // Linux 部署
+            };
+            com.lowagie.text.Font font = null;
+            for (String path : fontCandidates) {
+                try {
+                    com.lowagie.text.pdf.BaseFont bf = com.lowagie.text.pdf.BaseFont.createFont(
+                            path, com.lowagie.text.pdf.BaseFont.IDENTITY_H, com.lowagie.text.pdf.BaseFont.NOT_EMBEDDED);
+                    font = new com.lowagie.text.Font(bf, 12);
+                    break;
+                } catch (Exception ignored) {
+                }
+            }
+            if (font == null) {
+                // 无 CJK 字体兜底：用默认字体（中文会丢字，属环境问题，日志告警）
+                log.warn("[文档助手] 未找到 CJK 字体，PDF 中文可能无法显示");
+                font = new com.lowagie.text.Font();
+            }
+            com.lowagie.text.Font titleFont = new com.lowagie.text.Font(
+                    font.getBaseFont(), 18, com.lowagie.text.Font.BOLD);
+            com.lowagie.text.Font headFont = new com.lowagie.text.Font(
+                    font.getBaseFont(), 14, com.lowagie.text.Font.BOLD);
+
+            com.lowagie.text.Paragraph tp = new com.lowagie.text.Paragraph(
+                    title == null || title.isBlank() ? "文档" : title, titleFont);
+            tp.setAlignment(com.lowagie.text.Element.ALIGN_CENTER);
+            doc.add(tp);
+            doc.add(new com.lowagie.text.Paragraph(" "));
+
+            for (String line : markdown.split("\n", -1)) {
+                String s = line.strip();
+                if (s.isEmpty() || s.startsWith("---")) {
+                    continue;
+                }
+                com.lowagie.text.Paragraph p;
+                if (s.startsWith("##") || s.startsWith("#")) {
+                    p = new com.lowagie.text.Paragraph(
+                            s.replaceFirst("^#+\\s*", ""), headFont);
+                    p.setSpacingBefore(10);
+                } else {
+                    p = new com.lowagie.text.Paragraph(s, font);
+                    p.setFirstLineIndent(24);
+                }
+                doc.add(p);
+            }
+            doc.close();
+            return out.toByteArray();
+        } catch (Exception e) {
+            log.error("[文档助手] pdf 生成失败: {}", e.getMessage());
+            return new byte[0];
+        }
     }
 
     /** markdown 文本 → docx（标题居中加粗 + ## 分节 + 普通段落 + 列表缩进） */

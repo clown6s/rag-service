@@ -87,7 +87,7 @@ public class AgentChatController {
             String answer = StreamTokenFixer.fixFull(result.answer());
             // 法名引用校验：库外引用追加标注（防引用幻觉）；
             // MCP 工具轮跳过——业务制度名（如《员工年休假管理办法》）不是法条引用
-            if (!result.mcpToolsUsed()) {
+            if (!result.mcpToolsUsed() && !"DOC_WIZARD".equals(result.route())) {
                 String annotation = citationGuard.validate(answer);
                 if (annotation != null) {
                     answer = answer + annotation;

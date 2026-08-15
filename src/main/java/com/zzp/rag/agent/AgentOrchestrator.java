@@ -42,6 +42,7 @@ public class AgentOrchestrator {
     private final ChatModel turboModel;   // 轻量小模型：闲聊/追问澄清分级（省钱省延迟）
     private final com.zzp.rag.web.UsageTracker usageTracker;
     private final com.zzp.rag.mysql.service.ReviewService reviewService;
+    private final DocWizardService docWizardService;
     private final AgentService agentService;
     private final AgentTools agentTools;
     private final RetrievalPipeline retrievalPipeline;
@@ -62,6 +63,7 @@ public class AgentOrchestrator {
             @Qualifier("contextualChatModel") ChatModel turboModel,
             com.zzp.rag.web.UsageTracker usageTracker,
             com.zzp.rag.mysql.service.ReviewService reviewService,
+            DocWizardService docWizardService,
             AgentService agentService,
             AgentTools agentTools,
             RetrievalPipeline retrievalPipeline,
@@ -76,6 +78,7 @@ public class AgentOrchestrator {
         this.turboModel = turboModel;
         this.usageTracker = usageTracker;
         this.reviewService = reviewService;
+        this.docWizardService = docWizardService;
         this.agentService = agentService;
         this.agentTools = agentTools;
         this.retrievalPipeline = retrievalPipeline;
@@ -103,7 +106,27 @@ public class AgentOrchestrator {
 
     public AgentAnswer answer(String conversationId, String query, Long agentId) {
         EmployeeContext.EmployeeRuntime runtime = employeeContext.resolve(agentId);
-        // 员工目录确定性直查（最优先：个人信息问法不能被 SOP/路由截胡，
+        // 对话式文档生成向导（最优先：进行中时所有输入归向导；触发词命中即开新向导）
+        String wizardUser = com.zzp.rag.audit.AuditEvent.AuditContext.capture().user();
+        String wizardKey = conversationId + ":" + (wizardUser == null ? "anon" : wizardUser);
+        if (docWizardService.shouldHandle(wizardKey, query)) {
+            docWizardService.setDeptHint(runtime != null ? runtime.dept() : null);
+            try {
+                DocWizardService.WizardResult w = docWizardService.handle(
+                        wizardKey, query, runtime != null ? runtime.scopeExpr() : null,
+                        runtime != null ? runtime.employeeId() : null);
+                if (w.pendingFile() != null) {
+                    String userKey = wizardUser == null ? "anon" : wizardUser;
+                    docWizardService.archive(userKey, w.pendingFileName(), w.pendingFile());
+                    docWizardService.putPending(wizardKey, w.pendingFileName(), w.pendingFile());
+                }
+                return new AgentAnswer(w.reply(), List.of(), w.route(), false, 0, false,
+                        runtime != null ? runtime.employeeId() : 0);
+            } finally {
+                docWizardService.clearDeptHint();
+            }
+        }
+        // 员工目录确定性直查（个人信息问法不能被 SOP/路由截胡，
         // 实况："王强是什么时候入职的"被 onboard_guide SOP（关键词"入职"）拦截答了兜底）
         AgentAnswer employeeAnswer = tryEmployeeLookup(query, "KNOWLEDGE_QA", runtime);
         if (employeeAnswer != null) {

@@ -31,11 +31,37 @@ public class DocController {
     public record GenerateRequest(String docType, String title, String points, String tone) {}
 
     private final DocAssistantService docAssistant;
+    private final com.zzp.rag.agent.DocWizardService docWizardService;
     private final AuditService auditService;
 
-    public DocController(DocAssistantService docAssistant, AuditService auditService) {
+    public DocController(DocAssistantService docAssistant,
+                         com.zzp.rag.agent.DocWizardService docWizardService,
+                         AuditService auditService) {
         this.docAssistant = docAssistant;
+        this.docWizardService = docWizardService;
         this.auditService = auditService;
+    }
+
+    /** 对话生成的历史文件列表（按登录用户隔离；admin 看自己的——管理全量走数据目录） */
+    @org.springframework.web.bind.annotation.GetMapping("/history")
+    public ApiResponse<java.util.List<java.util.Map<String, Object>>> history() {
+        String user = com.zzp.rag.audit.AuditEvent.AuditContext.capture().user();
+        return ApiResponse.ok(docWizardService.history(user == null ? "anon" : user));
+    }
+
+    /** 下载历史文件（文件名白名单防路径穿越） */
+    @org.springframework.web.bind.annotation.GetMapping("/history/{name}")
+    public org.springframework.http.ResponseEntity<byte[]> historyFile(
+            @org.springframework.web.bind.annotation.PathVariable String name) {
+        String user = com.zzp.rag.audit.AuditEvent.AuditContext.capture().user();
+        byte[] bytes = docWizardService.historyFile(user == null ? "anon" : user, name);
+        if (bytes == null) {
+            return org.springframework.http.ResponseEntity.notFound().build();
+        }
+        return org.springframework.http.ResponseEntity.ok()
+                .header("Content-Disposition", "attachment; filename*=UTF-8''"
+                        + java.net.URLEncoder.encode(name, StandardCharsets.UTF_8))
+                .body(bytes);
     }
 
     /** 生成文档 → docx 附件 */

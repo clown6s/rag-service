@@ -33,6 +33,7 @@ public class FeishuChatBridge {
     private final FeishuConfig config;
     private final FeishuClient client;
     private final AgentOrchestrator orchestrator;
+    private final com.zzp.rag.agent.DocWizardService docWizardService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
 
@@ -47,11 +48,14 @@ public class FeishuChatBridge {
             new java.util.concurrent.ConcurrentHashMap<>();
 
     public FeishuChatBridge(FeishuConfig config, FeishuClient client,
-                            AgentOrchestrator orchestrator, AuditService auditService,
+                            AgentOrchestrator orchestrator,
+                            com.zzp.rag.agent.DocWizardService docWizardService,
+                            AuditService auditService,
                             ObjectMapper objectMapper) {
         this.config = config;
         this.client = client;
         this.orchestrator = orchestrator;
+        this.docWizardService = docWizardService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
     }
@@ -105,10 +109,25 @@ public class FeishuChatBridge {
             }
             log.info("[飞书] 收到消息 chat={} query={}", chatId, query);
 
+            // 文档向导慢生成（确认生成/修改）先回"正在处理"，避免用户干等
+            String wizardUser = auditUser;
+            String wizardKey = chatId + ":" + (wizardUser == null ? "anon" : wizardUser);
+            if (docWizardService.willGenerateSlow(wizardKey, query)) {
+                client.replyMessage(messageId, "收到，正在生成文档，约需半分钟…");
+            }
             // 数字员工对话：conversationId=chat_id（按群隔离记忆）；agentId 默认绑定
             Long agentId = config.defaultAgentId() > 0 ? config.defaultAgentId() : null;
             AgentOrchestrator.AgentAnswer answer = orchestrator.answer(chatId, query, agentId);
             String markdown = StreamTokenFixer.fixFull(answer.answer());
+            // 定稿文件推送（上传素材 + 发文件消息）
+            com.zzp.rag.agent.DocWizardService.Pending pending =
+                    docWizardService.takePending(wizardKey);
+            if (pending != null) {
+                String fileKey = client.uploadFile(pending.fileName(), pending.bytes());
+                if (fileKey != null) {
+                    client.sendFileMessage(chatId, fileKey);
+                }
+            }
             boolean replied;
             if (config.cardMode()) {
                 String card = buildCard(query, markdown, answer.sources(), chatId);
