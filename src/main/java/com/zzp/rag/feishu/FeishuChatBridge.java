@@ -130,7 +130,8 @@ public class FeishuChatBridge {
             }
             boolean replied;
             if (config.cardMode()) {
-                String card = buildCard(query, markdown, answer.sources(), chatId);
+                String card = buildCard(query, markdown, answer.sources(), chatId,
+                        !"DOC_WIZARD".equals(answer.route()));
                 replied = card != null && client.replyCard(messageId, card);
                 if (!replied) {
                     replied = client.replyMessage(messageId, toFeishuText(markdown));   // 卡片失败回退纯文本
@@ -171,6 +172,12 @@ public class FeishuChatBridge {
      * 用 ObjectMapper 序列化——手工拼接遇换行/引号会产出非法 JSON（飞书 400）。
      */
     private String buildCard(String query, String markdown, List<String> sources, String chatId) {
+        return buildCard(query, markdown, sources, chatId, true);
+    }
+
+    /** showSource=false：文档向导等无来源概念的回复不显示来源注记 */
+    private String buildCard(String query, String markdown, List<String> sources, String chatId,
+                             boolean showSource) {
         String md = markdown.length() > 6000
                 ? markdown.substring(0, 6000) + "\n\n…（内容过长已截断，完整内容请在 Web 端查看）"
                 : markdown;
@@ -182,30 +189,34 @@ public class FeishuChatBridge {
         regenValue.put("query", query);
         regenValue.put("chatId", chatId);
 
+        java.util.List<Object> elements = new java.util.ArrayList<>();
+        elements.add(java.util.Map.of("tag", "markdown", "content", md));
+        elements.add(java.util.Map.of("tag", "hr"));
+        if (showSource) {
+            elements.add(java.util.Map.of("tag", "note", "elements",
+                    java.util.List.of(java.util.Map.of("tag", "plain_text",
+                            "content", "📄 来源：" + sourceNote))));
+        }
+        elements.add(java.util.Map.of("tag", "action", "actions", java.util.List.of(
+                java.util.Map.of("tag", "button",
+                        "text", java.util.Map.of("tag", "plain_text", "content", "👍 有帮助"),
+                        "type", "primary",
+                        "value", java.util.Map.of("action", "helpful")),
+                java.util.Map.of("tag", "button",
+                        "text", java.util.Map.of("tag", "plain_text", "content", "👎 无帮助"),
+                        "type", "default",
+                        "value", java.util.Map.of("action", "unhelpful")),
+                java.util.Map.of("tag", "button",
+                        "text", java.util.Map.of("tag", "plain_text", "content", "🔄 重新生成"),
+                        "type", "default",
+                        "value", regenValue))));
+
         java.util.Map<String, Object> card = new java.util.LinkedHashMap<>();
         card.put("config", java.util.Map.of("wide_screen_mode", true));
         card.put("header", java.util.Map.of(
                 "title", java.util.Map.of("tag", "plain_text", "content", "🤖 数字员工回答"),
                 "template", "blue"));
-        card.put("elements", java.util.List.of(
-                java.util.Map.of("tag", "markdown", "content", md),
-                java.util.Map.of("tag", "hr"),
-                java.util.Map.of("tag", "note", "elements",
-                        java.util.List.of(java.util.Map.of("tag", "plain_text",
-                                "content", "📄 来源：" + sourceNote))),
-                java.util.Map.of("tag", "action", "actions", java.util.List.of(
-                        java.util.Map.of("tag", "button",
-                                "text", java.util.Map.of("tag", "plain_text", "content", "👍 有帮助"),
-                                "type", "primary",
-                                "value", java.util.Map.of("action", "helpful")),
-                        java.util.Map.of("tag", "button",
-                                "text", java.util.Map.of("tag", "plain_text", "content", "👎 无帮助"),
-                                "type", "default",
-                                "value", java.util.Map.of("action", "unhelpful")),
-                        java.util.Map.of("tag", "button",
-                                "text", java.util.Map.of("tag", "plain_text", "content", "🔄 重新生成"),
-                                "type", "default",
-                                "value", regenValue)))));
+        card.put("elements", elements);
         try {
             return objectMapper.writeValueAsString(card);
         } catch (Exception e) {
