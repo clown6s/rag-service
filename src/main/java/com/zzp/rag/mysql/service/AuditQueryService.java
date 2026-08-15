@@ -145,6 +145,62 @@ public class AuditQueryService {
         }
     }
 
+    /** 审计导出 CSV（BOM 头 + 逗号转义 + 换行转义；上限 10000 条） */
+    public byte[] exportCsv(String statusFilter, String keyword) {
+        if (!status.isAvailable()) {
+            return null;
+        }
+        try {
+            QueryWrapper<AuditEventEntity> qw = new QueryWrapper<>();
+            if (statusFilter != null && !statusFilter.isBlank()) {
+                qw.eq("status", statusFilter);
+            }
+            if (keyword != null && !keyword.isBlank()) {
+                qw.and(w -> w.like("`user`", keyword).or().like("query", keyword));
+            }
+            qw.orderByDesc("id");
+            qw.last("LIMIT 10000");
+            List<AuditEventEntity> rows = mapper.selectList(qw);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append('﻿');   // UTF-8 BOM：Excel 识别编码
+            sb.append("traceId,timestamp,user,ip,endpoint,category,query,sources,answerPreview,answerLength,totalMs,status,error\n");
+            for (AuditEventEntity e : rows) {
+                appendCsv(sb, e.getTraceId());
+                appendCsv(sb, e.getTimestamp());
+                appendCsv(sb, e.getUser());
+                appendCsv(sb, e.getIp());
+                appendCsv(sb, e.getEndpoint());
+                appendCsv(sb, e.getCategory());
+                appendCsv(sb, e.getQuery());
+                appendCsv(sb, e.getSources());
+                appendCsv(sb, e.getAnswerPreview());
+                sb.append(e.getAnswerLength() != null ? e.getAnswerLength() : 0).append(',');
+                sb.append(e.getTotalMs() != null ? e.getTotalMs() : 0).append(',');
+                appendCsv(sb, e.getStatus());
+                appendCsv(sb, e.getError());
+                sb.setLength(sb.length() - 1);   // 去掉最后一列的尾逗号
+                sb.append('\n');
+            }
+            return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            status.markUnavailable(e.getMessage());
+            log.warn("[审计查询] 导出失败，降级: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** CSV 单元格：逗号/引号/换行转义（RFC 4180 基础规则） */
+    private static void appendCsv(StringBuilder sb, String value) {
+        String v = value == null ? "" : value;
+        if (v.contains(",") || v.contains("\"") || v.contains("\n")) {
+            sb.append('"').append(v.replace("\"", "\"\"")).append('"');
+        } else {
+            sb.append(v);
+        }
+        sb.append(',');
+    }
+
     private AuditEventView toView(AuditEventEntity e) {
         List<String> sources = List.of();
         if (e.getSources() != null && !e.getSources().isBlank()) {

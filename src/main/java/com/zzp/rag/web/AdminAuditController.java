@@ -35,6 +35,25 @@ public class AdminAuditController {
         return stats != null ? ApiResponse.ok(stats) : ApiResponse.fail("业务库未连接，请检查 MySQL 服务");
     }
 
+    /**
+     * 审计导出 CSV（合规汇报）：UTF-8 BOM 头（Excel 直接打开中文不乱码），
+     * 与列表页同筛选条件，上限 10000 条防内存打爆。
+     */
+    @GetMapping("/export")
+    public org.springframework.http.ResponseEntity<byte[]> export(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String keyword) {
+        byte[] csv = auditQueryService.exportCsv(status, keyword);
+        if (csv == null) {
+            return org.springframework.http.ResponseEntity.status(503)
+                    .body("业务库未连接".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        return org.springframework.http.ResponseEntity.ok()
+                .header("Content-Type", "text/csv; charset=UTF-8")
+                .header("Content-Disposition", "attachment; filename=audit-export.csv")
+                .body(csv);
+    }
+
     @GetMapping("/events")
     public ApiResponse<AuditQueryService.PageResult<AuditQueryService.AuditEventView>> events(
             @RequestParam(defaultValue = "1") int page,
