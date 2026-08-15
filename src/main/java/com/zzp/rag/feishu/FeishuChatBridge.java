@@ -156,7 +156,40 @@ public class FeishuChatBridge {
                 return;
             }
 
-            // 新触发：弹表单卡片（input/select 一次填完），不再文字追问
+            // 新触发：一句话直达生成（带「关于…」标题）→ 云文档直出；否则弹表单卡片
+            if (docWizardService.isFreshTrigger(wizardKey, query)
+                    && docWizardService.canDirectGenerate(query)) {
+                com.zzp.rag.agent.DocWizardService.DirectResult r =
+                        docWizardService.directGenerate(wizardKey, query, auditUser);
+                String studioUrl = studioBaseUrl + "/studio?doc=" + r.studioDocId();
+                if (r.cloudUrl() != null) {
+                    String card = buildDocResultCard(r.title(), r.cloudUrl(), studioUrl);
+                    if (card == null || !client.replyCard(messageId, card)) {
+                        client.replyMessage(messageId,
+                                "已生成《" + r.title() + "》云文档：\n" + r.cloudUrl());
+                    }
+                } else {
+                    // 云文档不可用 → docx 文件兜底
+                    byte[] file = docWizardService.toDocxFile(r.title(), r.content());
+                    String fileKey = client.uploadFile(
+                            r.title().strip().replaceAll("[\\\\/:*?\"<>|\\s]+", "_") + ".docx", file);
+                    if (fileKey != null) {
+                        client.sendFileMessage(chatId, fileKey);
+                    }
+                    String card = buildDocResultCard(r.title(), null, studioUrl);
+                    if (card == null || !client.replyCard(messageId, card)) {
+                        client.replyMessage(messageId, "已生成《" + r.title() + "》docx 文件并发送到会话。");
+                    }
+                }
+                auditService.record(new AuditEvent(
+                        ctx.traceId(),
+                        LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                        auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/chat",
+                        "DOC_WIZARD", query, 0, List.of(), 0,
+                        false, 0, "一句话直达生成：" + r.title(), r.content().length(),
+                        System.currentTimeMillis() - start, "SUCCESS", null, 0));
+                return;
+            }
             if (docWizardService.isFreshTrigger(wizardKey, query)) {
                 String formCard = buildDocFormCard();
                 if (formCard != null && client.replyCard(messageId, formCard)) {
@@ -496,8 +529,8 @@ public class FeishuChatBridge {
         }
         elements.add(java.util.Map.of("tag", "note", "elements",
                 java.util.List.of(java.util.Map.of("tag", "plain_text",
-                        "content", "需要调整？点「在编辑器中修改」进工作台编辑器；"
-                                + "或直接回复修改要求（如「第二段精简」「落款改行政部」），回复「定稿」出正式文件。"))));
+                        "content", "需要调整？直接在群里回复修改要求（如「第二段精简」「落款改行政部」），"
+                                + "我会改好并同步更新到这份云文档；回复「定稿」出最终版。"))));
 
         java.util.Map<String, Object> card = new java.util.LinkedHashMap<>();
         card.put("config", java.util.Map.of("wide_screen_mode", true));

@@ -40,6 +40,7 @@ public class DocWizardService {
         String format = "docx";
         String issuer = "";
         String content = "";      // 生成/修改后的全文 markdown
+        String cloudDocId = null; // 已直出的云文档 id：后续修改/定稿直接回写同一份（null=定稿时新建）
         long lastActiveAt = System.currentTimeMillis();
     }
 
@@ -107,7 +108,8 @@ public class DocWizardService {
     // ==================== 触发与取消 ====================
 
     private static final Pattern TRIGGER = Pattern.compile(
-            "生成.{0,6}文档|写.{0,4}(文档|通知|报告|方案|周报|纪要)|起草|帮我写|拟一份|写个通知|写个报告");
+            "生成.{0,10}(文档|通知|报告|方案|周报|纪要|安排)|写.{0,4}(文档|通知|报告|方案|周报|纪要)|起草|帮我写|拟一份"
+                    + "|关于.{2,40}(通知|报告|方案|周报|纪要|安排|文档)");
 
     private static final Pattern CANCEL = Pattern.compile("^(取消|算了|不做了|不要了|退出)[。！!？?\\s]*$");
 
@@ -137,11 +139,124 @@ public class DocWizardService {
         return !isActive(key) && query != null && TRIGGER.matcher(query).find();
     }
 
+    /** 一句话直达判定：触发语之外带「关于…」标题句式 → 直接生成；否则弹表单卡片 */
+    public boolean canDirectGenerate(String query) {
+        return query != null && guessTitle(query) != null;
+    }
+
+    /** 一句话直达生成结果 */
+    public record DirectResult(String title, String content, String cloudUrl, String studioDocId) {}
+
+    /**
+     * 一句话直达：提取标题/类型/要点 → 生成（节假日类自动引用官方放假安排）→
+     * 云文档直出（发起者编辑权）→ 注册预览状态（cloudDocId 记下，后续修改直接回写同一份）。
+     */
+    public DirectResult directGenerate(String key, String query, String editorOpenId) {
+        String title = guessTitle(query);
+        String docType = title.endsWith("通知") ? "通知"
+                : title.endsWith("报告") ? "报告"
+                : title.endsWith("方案") ? "方案"
+                : title.endsWith("周报") ? "周报"
+                : title.endsWith("纪要") ? "会议纪要" : "通用文档";
+        String points = cleanPoints(query, title);
+        String kb = "";
+        if (HOLIDAY_TITLE.matcher(title).find()) {
+            String official = fetchDocFullText("2026年节假日安排通知");
+            if (!official.isBlank()) {
+                kb = OFFICIAL_BLOCK_PREFIX + official + "\n[/官方原文]";
+            }
+        }
+        String content = docAssistant.generateContent(docType, title,
+                (kb.isBlank() ? "" : kb + "\n\n用户要点：") + points,
+                "正式公文语气", null);
+        CloudPublish pub = publishCloudDocDetail(title, content, editorOpenId);
+        State s = new State();
+        s.stage = Stage.PREVIEW;
+        s.docType = docType;
+        s.title = title;
+        s.points = points;
+        s.content = content;
+        s.cloudDocId = pub == null ? null : pub.docId();
+        states.put(key, s);
+        String studioDocId = java.util.UUID.randomUUID().toString();
+        studioDocs.put(studioDocId, new StoredDoc(title, content));
+        log.info("[文档向导] 一句话直达生成 title={} cloud={} editor={}",
+                title, pub == null ? "无" : pub.url(), editorOpenId);
+        return new DirectResult(title, content, pub == null ? null : pub.url(), studioDocId);
+    }
+
+    /** 云文档直出结果（docId 供回写，url 供展示） */
+    public record CloudPublish(String docId, String url) {}
+
+    /** 云文档直出（带编辑者）：返回 docId+url；失败返回 null */
+    public CloudPublish publishCloudDocDetail(String title, String content, String editorOpenId) {
+        try {
+            String docId = feishuClient.createCloudDoc(title);
+            if (docId == null) {
+                return null;
+            }
+            java.util.List<String> blockIds = feishuClient.writeCloudDocBlocks(docId,
+                    toBlocksForExport(content + "\n\n" + FOOTER, title));
+            if (blockIds == null || blockIds.isEmpty()) {
+                return null;
+            }
+            for (int idx : signoffIndexes(content)) {
+                if (idx >= 0 && idx < blockIds.size()) {
+                    feishuClient.updateBlockAlign(docId, blockIds.get(idx), 3);
+                }
+            }
+            feishuClient.makeCloudDocOrgReadable(docId);
+            if (editorOpenId != null && !editorOpenId.isBlank()) {
+                feishuClient.addDocEditor(docId, editorOpenId);
+            }
+            return new CloudPublish(docId, feishuClient.cloudDocUrl(docId));
+        } catch (Exception e) {
+            log.warn("[文档向导] 云文档直出失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 把当前内容写回已存在的云文档：读版本号 → 清空 → 重写（缩进排版 + 落款对齐） */
+    private boolean syncToCloudDoc(State s) {
+        if (s.cloudDocId == null) {
+            return false;
+        }
+        try {
+            com.zzp.rag.feishu.FeishuClient.CloudDocText cur =
+                    feishuClient.readCloudDocText(s.cloudDocId);
+            if (cur != null && cur.blockCount() > 0) {
+                feishuClient.clearCloudDocChildren(s.cloudDocId, cur.blockCount(), cur.revisionId());
+            }
+            java.util.List<String> ids = feishuClient.writeCloudDocBlocks(s.cloudDocId,
+                    toBlocksForExport(s.content + "\n\n" + FOOTER, s.title));
+            if (ids == null || ids.isEmpty()) {
+                return false;
+            }
+            for (int idx : signoffIndexes(s.content)) {
+                if (idx >= 0 && idx < ids.size()) {
+                    feishuClient.updateBlockAlign(s.cloudDocId, ids.get(idx), 3);
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            log.warn("[文档向导] 云文档回写失败: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /** 读取云文档当前文本（含用户手工编辑）；失败回退 s.content */
+    private String currentCloudText(State s) {
+        com.zzp.rag.feishu.FeishuClient.CloudDocText cur =
+                feishuClient.readCloudDocText(s.cloudDocId);
+        return cur != null && !cur.text().isBlank() ? cur.text() : s.content;
+    }
+
     /** 表单一次性提交：生成全文 → 云文档直出（发起者授编辑权）→ 注册预览状态（后续文本消息可继续修改/定稿） */
     public FormResult submitForm(String key, String docType, String title, String points,
                                  String tone, String issuer, String editorOpenId) {
         String content = docAssistant.generateContent(docType, title, points, tone, issuer);
-        String url = publishCloudDoc(title, content, editorOpenId);
+        CloudPublish pub = publishCloudDocDetail(title, content, editorOpenId);
+        String url = pub == null ? null : pub.url();
         State s = new State();
         s.stage = Stage.PREVIEW;
         s.docType = docType == null || docType.isBlank() ? "通用" : docType;
@@ -150,6 +265,7 @@ public class DocWizardService {
         s.tone = tone == null || tone.isBlank() ? "正式" : tone;
         s.issuer = issuer == null ? "" : issuer;
         s.content = content;
+        s.cloudDocId = pub == null ? null : pub.docId();
         states.put(key, s);
         // 存档供 H5 编辑器加载（生成后编辑跳转）；上限 100 份，超出淘汰最旧
         String docId = java.util.UUID.randomUUID().toString();
@@ -282,6 +398,23 @@ public class DocWizardService {
     private WizardResult preview(State s, String key, String query, String scopeExpr) {
         String q = query.strip();
         if (isFinalizeWord(q)) {
+            // 已直出云文档的（表单/一句话路径）：定稿 = 把当前内容写回同一份，不另建新文档
+            if (s.cloudDocId != null) {
+                boolean ok = syncToCloudDoc(s);
+                states.remove(key);
+                if (ok) {
+                    String url = feishuClient.cloudDocUrl(s.cloudDocId);
+                    return new WizardResult(
+                            "文档已更新为最终版（云文档，在线可编辑）：\n" + url
+                                    + "\n\n文档就此定稿，有需要随时再找我。",
+                            "DOC_WIZARD", null, null);
+                }
+                String fileName = safeFileTitle(s.title);
+                byte[] file = docAssistant.toFile(s.format, s.title, s.content, buildFooter(s));
+                states.remove(key);
+                return new WizardResult("云文档更新失败，已改发文件。文档就此定稿。",
+                        "DOC_WIZARD", fileName + "." + s.format, file);
+            }
             String fileName = safeFileTitle(s.title);
             byte[] file = docAssistant.toFile(s.format, s.title, s.content, buildFooter(s));
             // docx 直出飞书云文档（在线协作）；失败/其他格式回退文件消息
@@ -329,7 +462,9 @@ public class DocWizardService {
                     "DOC_WIZARD", null, null);
         }
         String kb = resolveKbReference(q, scopeExpr);
-        String revisePrompt = buildRevisePrompt(s.content, instruction, kb);
+        // 已直出云文档的：以云文档当前内容为底稿修改（保留用户手工编辑），改完写回同一份
+        String base = s.cloudDocId != null ? currentCloudText(s) : s.content;
+        String revisePrompt = buildRevisePrompt(base, instruction, kb);
         long start = System.currentTimeMillis();
         String out = docAssistant.getChatModel().chat(revisePrompt);
         log.info("[文档向导] 修改耗时 {}ms", System.currentTimeMillis() - start);
@@ -340,12 +475,23 @@ public class DocWizardService {
         int sumIdx = out.indexOf("【修改摘要】");
         s.content = (sumIdx >= 0 ? out.substring(0, sumIdx) : out).strip();
         String summary = extractSummary(out);
-        return new WizardResult(buildPreviewText(s, summary), "DOC_WIZARD", null, null);
+        String reply = buildPreviewText(s, summary);
+        if (s.cloudDocId != null && syncToCloudDoc(s)) {
+            reply = reply + "\n\n已同步更新到云文档：" + feishuClient.cloudDocUrl(s.cloudDocId);
+        }
+        return new WizardResult(reply, "DOC_WIZARD", null, null);
     }
 
     /** 生成：注入知识库资料 → LLM 出全文 → 预览 */
     private WizardResult generate(State s, String scopeExpr) {
-        String kb = resolveKbReference(s.points, scopeExpr);
+        // 节假日类标题：官方放假安排整份注入（防编造：用户没提也要按官方文件写，且逐字一致）
+        String kb;
+        if (HOLIDAY_TITLE.matcher(s.title).find()) {
+            String official = fetchDocFullText("2026年节假日安排通知");
+            kb = official.isBlank() ? "" : OFFICIAL_BLOCK_PREFIX + official + "\n[/官方原文]";
+        } else {
+            kb = resolveKbReference(s.points, scopeExpr);
+        }
         String prompt = buildGeneratePrompt(s, kb);
         long start = System.currentTimeMillis();
         String content = docAssistant.getChatModel().chat(prompt);
@@ -445,6 +591,29 @@ public class DocWizardService {
     // ==================== 知识库注入 ====================
 
     private static final Pattern DOC_REF = Pattern.compile("[《「]([^》」]{2,40})[》」]|参考\\s*([\\u4e00-\\u9fa5A-Za-z0-9]{2,30})");
+
+    /** 节假日标题判定（生成时自动引用官方放假安排） */
+    private static final Pattern HOLIDAY_TITLE = Pattern.compile("(放假|节假日|五一|劳动节|春节|国庆|清明|端午|中秋|元旦)");
+
+    /** 官方放假安排注入块前缀（硬约束：防止模型凭记忆写往年安排） */
+    private static final String OFFICIAL_BLOCK_PREFIX =
+            "【2026年官方放假安排原文——放假日期、天数、调休上班日期必须逐字与原文完全一致，"
+                    + "禁止凭记忆使用任何其他年份的安排】\n";
+
+    /** 检索指定文档名并拼接全部段落（节假日通知必须整份注入：top-3 会漏掉目标节日所在段落） */
+    private String fetchDocFullText(String docName) {
+        try {
+            RetrievalPipeline.PipelineResult pre = retrievalPipeline.execute(docName, null, false);
+            if (pre.segments().isEmpty()) {
+                return "";
+            }
+            return pre.segments().stream().map(s -> s.text())
+                    .collect(java.util.stream.Collectors.joining("\n\n"));
+        } catch (Exception e) {
+            log.warn("[文档向导] 知识库全文获取失败 {}: {}", docName, e.getMessage());
+            return "";
+        }
+    }
 
     /** 提取引用文档名并检索（按员工范围），拼接成【参考资料】块；无引用返回空串 */
     private String resolveKbReference(String text, String scopeExpr) {

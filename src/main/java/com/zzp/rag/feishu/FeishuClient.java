@@ -258,6 +258,125 @@ public class FeishuClient {
         }
     }
 
+    /** 云文档全文读取结果（版本号供清空回写） */
+    public record CloudDocText(String text, long revisionId, int blockCount) {}
+
+    /**
+     * 读取云文档全文（含用户手工编辑后的最新内容）：blocks 逐页拉取 → 按块类型还原为
+     * markdown 行（heading1→#、heading2→##、有序/无序加数字或破折号前缀——回写时还原列表块）。
+     */
+    public CloudDocText readCloudDocText(String documentId) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return null;
+            }
+            StringBuilder sb = new StringBuilder();
+            long revision = -1;
+            int count = 0;
+            String pageToken = null;
+            do {
+                String url = config.baseUrl() + "/open-apis/docx/v1/documents/"
+                        + documentId + "/blocks?page_size=500"
+                        + (pageToken != null ? "&page_token=" + pageToken : "");
+                HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofSeconds(15))
+                        .header("Authorization", "Bearer " + token)
+                        .GET()
+                        .build();
+                HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+                if (resp.statusCode() != 200) {
+                    return null;
+                }
+                JsonNode node = objectMapper.readTree(resp.body());
+                if (node.path("code").asInt() != 0) {
+                    return null;
+                }
+                JsonNode data = node.path("data");
+                if (revision < 0) {
+                    revision = data.path("document_revision_id").asLong(-1);
+                }
+                for (JsonNode item : data.path("items")) {
+                    String line = blockToText(item);
+                    if (line != null) {
+                        if (sb.length() > 0) {
+                            sb.append('\n');
+                        }
+                        sb.append(line);
+                        count++;
+                    }
+                }
+                pageToken = data.path("has_more").asBoolean(false)
+                        ? data.path("page_token").asText(null) : null;
+            } while (pageToken != null);
+            return new CloudDocText(sb.toString(), revision, count);
+        } catch (Exception e) {
+            log.warn("[飞书] 云文档读取异常: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 单块 → markdown 行（页面块/无文本块返回 null） */
+    private String blockToText(JsonNode item) {
+        java.util.Map<String, String> prefixes = new java.util.LinkedHashMap<>();
+        prefixes.put("heading1", "# ");
+        prefixes.put("heading2", "## ");
+        prefixes.put("heading3", "### ");
+        prefixes.put("ordered", "1. ");
+        prefixes.put("bullet", "- ");
+        for (java.util.Map.Entry<String, String> e : prefixes.entrySet()) {
+            JsonNode node = item.get(e.getKey());
+            if (node != null) {
+                String text = textOfElements(node);
+                return text == null ? null : e.getValue() + text;
+            }
+        }
+        String text = textOfElements(item.get("text"));
+        return text;
+    }
+
+    private String textOfElements(JsonNode block) {
+        if (block == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (JsonNode el : block.path("elements")) {
+            sb.append(el.path("text_run").path("content").asText(""));
+        }
+        return sb.toString();
+    }
+
+    /** 清空云文档根块下的全部子块（回写前调用）；需文档版本号，删除后内容为空 */
+    public boolean clearCloudDocChildren(String documentId, int blockCount, long revisionId) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null || blockCount <= 0) {
+                return token != null;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "start_index", 0, "end_index", blockCount));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/docx/v1/documents/"
+                                    + documentId + "/blocks/" + documentId
+                                    + "/children/batch_delete?document_revision_id=" + revisionId))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .method("DELETE", HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            boolean ok = resp.statusCode() == 200
+                    && objectMapper.readTree(resp.body()).path("code").asInt() == 0;
+            if (!ok) {
+                log.warn("[飞书] 云文档清空失败: {}", truncate(resp.body(), 150));
+            }
+            return ok;
+        } catch (Exception e) {
+            log.warn("[飞书] 云文档清空异常: {}", e.getMessage());
+            return false;
+        }
+    }
+
     /** 块对齐（1=左 2=居中 3=右；fields 必须含 1 即 align 字段，实测数值枚举） */
     public boolean updateBlockAlign(String documentId, String blockId, int align) {
         try {
