@@ -98,6 +98,17 @@ public final class StreamTokenFixer {
         result = result.replaceAll("(?m)^[ \\t]*\\d*\\.?\\s*[问答][：:]\\s*", "");
         // 剥除后压缩连续空行
         result = result.replaceAll("\\n{3,}", "\n\n");
+        // 12. 结尾未完成残句清理：模型收尾被截断时最后一行留下
+        //     "它不可怕，可怕的是："类冒号收尾碎片 → 行内回退到最后一个完整句（。！？），
+        //     整行无完整句则整行删除；只动最后一行，前面的表格/列表内容不受影响
+        if (result.stripTrailing().endsWith("：")) {
+            String[] lines = result.split("\n", -1);
+            String lastLine = lines[lines.length - 1].strip();
+            int cut = Math.max(lastLine.lastIndexOf('。'),
+                    Math.max(lastLine.lastIndexOf('！'), lastLine.lastIndexOf('？')));
+            lines[lines.length - 1] = cut >= 0 ? lastLine.substring(0, cut + 1) : "";
+            result = String.join("\n", lines).stripTrailing();
+        }
         return result;
     }
 
@@ -183,7 +194,9 @@ public final class StreamTokenFixer {
                     continue;
                 }
                 nonEmpty++;
-                if (cell.length() > 20 || cell.matches(".*[。！？；，、].*")) {
+                // 表头单元格允许 ！？（"出现即需排查！"类标签），
+                // 句号/逗号等才视为句子特征（数据行内容）
+                if (cell.length() > 20 || cell.matches(".*[。；，、].*")) {
                     headerLike = false;
                     break;
                 }
