@@ -108,7 +108,7 @@ public class DocWizardService {
     // ==================== 触发与取消 ====================
 
     private static final Pattern TRIGGER = Pattern.compile(
-            "生成.{0,10}(文档|通知|报告|方案|周报|纪要|安排)|写.{0,4}(文档|通知|报告|方案|周报|纪要)|起草|帮我写|拟一份"
+            "生成.{0,10}(文档|通知|报告|方案|周报|纪要|安排)|写.{0,10}(文档|通知|报告|方案|周报|纪要|安排)|起草|帮我写|拟一份"
                     + "|关于.{2,40}(通知|报告|方案|周报|纪要|安排|文档)");
 
     private static final Pattern CANCEL = Pattern.compile("^(取消|算了|不做了|不要了|退出)[。！!？?\\s]*$");
@@ -580,10 +580,16 @@ public class DocWizardService {
         if (m.find()) {
             return m.group(1);
         }
-        // 短输入且无句读：整体即标题（"2026年9月工作总结"）
+        // 短输入且无句读：剥掉引导语后整体即标题（"写一个五一放假的通知"→"关于五一放假的通知"）
         String stripped = query.strip();
-        if (stripped.length() <= 20 && !stripped.matches(".*[，。；、\\n].*")) {
-            return stripped;
+        if (stripped.length() <= 30 && !stripped.matches(".*[，。；、\\n].*")) {
+            String title = stripped.replaceFirst("^(帮我|请|麻烦)?(生成|起草|拟一份|写一个|写一份|写份|写个|写)", "").strip();
+            if (title.length() >= 4) {
+                if (!title.startsWith("关于") && title.matches(".*(通知|报告|方案|周报|纪要)$")) {
+                    return "关于" + title;
+                }
+                return title;
+            }
         }
         return null;
     }
