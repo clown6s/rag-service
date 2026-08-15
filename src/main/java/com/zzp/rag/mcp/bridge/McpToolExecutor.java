@@ -50,6 +50,21 @@ public class McpToolExecutor implements ToolExecutor {
             if (Boolean.TRUE.equals(result.isError())) {
                 return "工具执行失败: " + text;
             }
+            // 图表数据标记：__CHART__{json} 首行 → 解析到 ThreadLocal（本线程=Agent 线程），
+            // 从正文剥离（图表 JSON 不喂 LLM/校验层）
+            if (text.startsWith("__CHART__")) {
+                int nl = text.indexOf('\n');
+                if (nl > 0) {
+                    try {
+                        com.zzp.rag.mcp.McpCallTracker.putChartData(objectMapper.readValue(
+                                text.substring("__CHART__".length(), nl),
+                                new TypeReference<Map<String, Object>>() {}));
+                    } catch (Exception ignored) {
+                        // 图表数据损坏只影响展示，不影响数据正文
+                    }
+                    text = text.substring(nl + 1).strip();
+                }
+            }
             // 工具结果并入校验依据（防模型在工具数据外夹带编造，如"研发部共42人"）
             com.zzp.rag.mcp.McpCallTracker.appendResult(text);
             return text.isEmpty() ? "（工具无返回内容）" : text;

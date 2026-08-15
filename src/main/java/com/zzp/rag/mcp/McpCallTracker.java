@@ -13,6 +13,7 @@ public final class McpCallTracker {
 
     private static final ThreadLocal<Boolean> CALLED = new ThreadLocal<>();
     private static final ThreadLocal<StringBuilder> TOOL_RESULTS = new ThreadLocal<>();
+    private static final ThreadLocal<java.util.Map<String, Object>> CHART_DATA = new ThreadLocal<>();
 
     private McpCallTracker() {}
 
@@ -33,6 +34,19 @@ public final class McpCallTracker {
         sb.append(text).append('\n');
     }
 
+    /** 结构化图表数据（数据类工具置入；编排器统一消费到 McpChartSink 供渠道端渲染） */
+    public static void putChartData(java.util.Map<String, Object> chart) {
+        if (chart != null && !chart.isEmpty()) {
+            CHART_DATA.set(chart);
+        }
+    }
+
+    public static java.util.Map<String, Object> consumeChartData() {
+        java.util.Map<String, Object> v = CHART_DATA.get();
+        CHART_DATA.remove();
+        return v;
+    }
+
     public static boolean consumeCalled() {
         Boolean v = CALLED.get();
         CALLED.remove();
@@ -49,5 +63,6 @@ public final class McpCallTracker {
     public static void clear() {
         CALLED.remove();
         TOOL_RESULTS.remove();
+        CHART_DATA.remove();
     }
 }

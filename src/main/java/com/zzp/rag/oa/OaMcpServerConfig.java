@@ -1,5 +1,6 @@
 package com.zzp.rag.oa;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpServerFeatures;
@@ -67,7 +68,19 @@ public class OaMcpServerConfig {
                 .tool(employeeListTool(), (exchange, args) -> textResult(oa.call(
                         "/api/employee/list", "GET", null)))
                 .tool(deptTreeTool(), (exchange, args) -> textResult(oa.call(
-                        "/api/dept/tree", "GET", null)));
+                        "/api/dept/tree", "GET", null)))
+                .tool(bizMetricsTool(), (exchange, args) -> {
+                    String body = oa.call("/api/biz/metrics?days=" + args.get("days"), "GET", null);
+                    return textResult(chartLine(buildMetricsChart(body), body));
+                })
+                .tool(bizExpensesTool(), (exchange, args) -> {
+                    String employee = args.get("employee") == null ? null : String.valueOf(args.get("employee"));
+                    String body = oa.call("/api/biz/expenses?days=" + args.get("days")
+                            + (employee == null || employee.isBlank() ? ""
+                            : "&employee=" + java.net.URLEncoder.encode(employee, java.nio.charset.StandardCharsets.UTF_8)),
+                            "GET", null);
+                    return textResult(chartLine(buildExpenseChart(body), body));
+                });
         io.modelcontextprotocol.server.McpSyncServer server = spec.build();
         log.info("[OA-MCP] 服务已装配: {} / {}", SSE_ENDPOINT, MESSAGE_ENDPOINT);
         return server;
@@ -85,6 +98,119 @@ public class OaMcpServerConfig {
             registration.setLoadOnStartup(1);
             log.info("[OA-MCP] servlet 已注册: {} {}", SSE_ENDPOINT, MESSAGE_ENDPOINT);
         };
+    }
+
+    // ==================== 图表数据构造（渠道端渲染用） ====================
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** metrics 响应 → 多系列折线图表数据 + 表格兜底 */
+    private static Map<String, Object> buildMetricsChart(String body) {
+        try {
+            JsonNode data = MAPPER.readTree(body).path("data");
+            if (!data.has("dates")) {
+                return null;
+            }
+            java.util.List<String> dates = new java.util.ArrayList<>();
+            data.path("dates").forEach(d -> dates.add(d.asText()));
+            String[] seriesKeys = {"revenue", "cost", "profit"};
+            String[] seriesNames = {"营收", "成本", "利润"};
+            java.util.List<Object> values = new java.util.ArrayList<>();
+            for (int s = 0; s < seriesKeys.length; s++) {
+                JsonNode arr = data.path(seriesKeys[s]);
+                for (int i = 0; i < arr.size() && i < dates.size(); i++) {
+                    Map<String, Object> row = new java.util.LinkedHashMap<>();
+                    row.put("date", dates.get(i));
+                    row.put("series", seriesNames[s]);
+                    row.put("value", arr.get(i).asDouble());
+                    values.add(row);
+                }
+            }
+            java.util.List<java.util.List<String>> table = new java.util.ArrayList<>();
+            java.util.List<String> head = new java.util.ArrayList<>(java.util.List.of("日期"));
+            head.addAll(java.util.List.of("营收", "成本", "利润"));
+            table.add(head);
+            for (int i = 0; i < dates.size(); i++) {
+                table.add(java.util.List.of(dates.get(i),
+                        fmt(data.path("revenue").get(i)), fmt(data.path("cost").get(i)),
+                        fmt(data.path("profit").get(i))));
+            }
+            JsonNode sum = data.path("summary");
+            Map<String, Object> chart = new java.util.LinkedHashMap<>();
+            chart.put("kind", "metrics");
+            chart.put("chartType", "line");
+            chart.put("xField", "date");
+            chart.put("yField", "value");
+            chart.put("seriesField", "series");
+            chart.put("title", "近" + dates.size() + "天经营数据（元）");
+            chart.put("values", values);
+            chart.put("table", table);
+            chart.put("summary", "合计：营收 " + fmt(sum.path("revenue"))
+                    + "，成本 " + fmt(sum.path("cost")) + "，利润 " + fmt(sum.path("profit")));
+            return chart;
+        } catch (Exception e) {
+            log.warn("[OA-MCP] 经营数据图表构造失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** expenses 响应 → 柱状图表数据 + 表格兜底 */
+    private static Map<String, Object> buildExpenseChart(String body) {
+        try {
+            JsonNode data = MAPPER.readTree(body).path("data");
+            if (!data.has("items")) {
+                return null;
+            }
+            java.util.List<Object> values = new java.util.ArrayList<>();
+            java.util.List<java.util.List<String>> table = new java.util.ArrayList<>();
+            table.add(java.util.List.of("日期", "类型", "金额", "备注"));
+            for (JsonNode it : data.path("items")) {
+                Map<String, Object> row = new java.util.LinkedHashMap<>();
+                row.put("date", it.path("d").asText());
+                row.put("series", it.path("expenseType").asText());
+                row.put("value", it.path("amount").asDouble());
+                values.add(row);
+                table.add(java.util.List.of(it.path("d").asText(),
+                        it.path("expenseType").asText(), fmt(it.path("amount")),
+                        it.path("remark").asText("")));
+            }
+            Map<String, Object> chart = new java.util.LinkedHashMap<>();
+            chart.put("kind", "expenses");
+            chart.put("chartType", "bar");
+            chart.put("xField", "date");
+            chart.put("yField", "value");
+            chart.put("seriesField", "series");
+            chart.put("title", data.path("employee").asText("全员") + "近"
+                    + data.path("count").asInt() + "笔报销（元）");
+            chart.put("values", values);
+            chart.put("table", table);
+            chart.put("summary", "合计 " + fmt(data.path("total"))
+                    + " 元，共 " + data.path("count").asInt() + " 笔");
+            return chart;
+        } catch (Exception e) {
+            log.warn("[OA-MCP] 报销图表构造失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 图表数据以文本标记随工具结果透传（MCP 服务线程与 Agent 线程不同，ThreadLocal 传不过去；
+     *  由 McpToolExecutor 在 Agent 线程解析剥离后放回 ThreadLocal） */
+    private static String chartLine(Map<String, Object> chart, String body) {
+        try {
+            return chart == null || chart.isEmpty()
+                    ? body
+                    : "__CHART__" + MAPPER.writeValueAsString(chart) + "\n" + body;
+        } catch (Exception e) {
+            return body;
+        }
+    }
+
+    private static String fmt(JsonNode n) {
+        if (n == null || n.isNull()) {
+            return "-";
+        }
+        double v = n.asDouble();
+        return v == Math.rint(v) ? String.valueOf((long) v) : String.valueOf(v);
     }
 
     // ==================== 工具定义 ====================
@@ -135,6 +261,26 @@ public class OaMcpServerConfig {
                                 "comment", prop("string", "审批意见")),
                         List.of("applyId", "approverId", "approverName", "action"),
                         null, null, null));
+    }
+
+    private McpSchema.Tool bizMetricsTool() {
+        return new McpSchema.Tool("oa_business_metrics",
+                "查询公司最近 N 天经营数据（营收/成本/利润，按天）。"
+                        + "用户问经营情况/营收/利润/生意/业绩等数据类问题时调用，days 默认 7。",
+                new McpSchema.JsonSchema("object",
+                        Map.of("days", prop("integer", "最近天数，默认7")),
+                        List.of(), null, null, null));
+    }
+
+    private McpSchema.Tool bizExpensesTool() {
+        return new McpSchema.Tool("oa_employee_expenses",
+                "查询员工最近 N 天报销记录与合计金额。"
+                        + "用户问某员工报销/花了多少钱/费用明细时调用；employee 为空查全员。",
+                new McpSchema.JsonSchema("object",
+                        Map.of(
+                                "employee", prop("string", "员工姓名，为空查全员"),
+                                "days", prop("integer", "最近天数，默认7")),
+                        List.of(), null, null, null));
     }
 
     private McpSchema.Tool employeeListTool() {

@@ -236,7 +236,17 @@ public class FeishuChatBridge {
                 }
             }
             boolean replied;
-            if (!"DOC_WIZARD".equals(answer.route()) && config.cardMode()) {
+            // 数据类回答（MCP 工具返回结构化数据）→ 图表卡片
+            java.util.Map<String, Object> chartData = com.zzp.rag.mcp.McpChartSink.getAndClear();
+            if (chartData != null && !chartData.isEmpty()) {
+                log.info("[飞书] 数据卡片构建 chat={} kind={} title={}", chatId,
+                        chartData.get("kind"), chartData.get("title"));
+                String card = buildDataCard(markdown, chartData, answer.sources());
+                replied = card != null && client.replyCard(messageId, card);
+                if (!replied) {
+                    replied = client.replyMessage(messageId, toFeishuText(markdown));   // 图表卡片失败回退纯文本
+                }
+            } else if (!"DOC_WIZARD".equals(answer.route()) && config.cardMode()) {
                 String card = buildCard(query, markdown, answer.sources(), chatId);
                 replied = card != null && client.replyCard(messageId, card);
                 if (!replied) {
@@ -423,6 +433,70 @@ public class FeishuChatBridge {
             return objectMapper.writeValueAsString(card);
         } catch (Exception e) {
             log.error("[飞书] 卡片构建失败（回退纯文本）: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 数据回答卡片（卡片 JSON 2.0）：markdown 结论 + VChart 图表组件 + 数据表格 + 反馈按钮。
+     * 图表基于 VChart 通用 spec：chart_spec={type, data.values, xField, yField, seriesField}；
+     * 表格用 markdown 兜底（客户端旧版/图表渲染失败时数据仍可读）。
+     */
+    private String buildDataCard(String markdown, java.util.Map<String, Object> chart,
+                                 List<String> sources) {
+        try {
+            java.util.List<Object> elements = new java.util.ArrayList<>();
+            String md = markdown.length() > 2000
+                    ? markdown.substring(0, 2000) + "\n\n…（内容已截断）" : markdown;
+            elements.add(java.util.Map.of("tag", "markdown", "content", toCardMarkdown(md)));
+
+            // VChart spec：多系列用 seriesField
+            java.util.Map<String, Object> spec = new java.util.LinkedHashMap<>();
+            spec.put("type", chart.getOrDefault("chartType", "line"));
+            spec.put("data", java.util.Map.of("values", chart.getOrDefault("values", java.util.List.of())));
+            spec.put("xField", chart.getOrDefault("xField", "date"));
+            spec.put("yField", chart.getOrDefault("yField", "value"));
+            Object seriesField = chart.get("seriesField");
+            if (seriesField != null && !String.valueOf(seriesField).isBlank()) {
+                spec.put("seriesField", seriesField);
+            }
+            spec.put("title", java.util.Map.of("text", chart.getOrDefault("title", "数据")));
+            elements.add(java.util.Map.of("tag", "chart",
+                    "chart_spec", spec));   // 字段名必须 snake_case：chart_spec（camelCase 会被飞书拒 400）
+
+            // 数据表格（markdown 兜底）
+            Object tableObj = chart.get("table");
+            if (tableObj instanceof java.util.List<?> table && !table.isEmpty()) {
+                StringBuilder sb = new StringBuilder("**").append(chart.getOrDefault("title", "数据")).append("**\n\n");
+                for (Object rowObj : table) {
+                    if (rowObj instanceof java.util.List<?> row) {
+                        sb.append(String.join(" | ", row.stream()
+                                        .map(c -> String.valueOf(c).replace("|", "｜")).toList()))
+                                .append('\n');
+                    }
+                }
+                Object summary = chart.get("summary");
+                if (summary != null && !String.valueOf(summary).isBlank()) {
+                    sb.append("\n**").append(summary).append("**");
+                }
+                elements.add(java.util.Map.of("tag", "markdown", "content", sb.toString()));
+            }
+
+            elements.add(java.util.Map.of("tag", "hr"));
+            // schema 2.0 不支持 note 组件（unsupported tag note），来源注记用 markdown
+            elements.add(java.util.Map.of("tag", "markdown",
+                    "content", "数据来源：OA 业务系统 · 图表由 VChart 渲染"));
+
+            java.util.Map<String, Object> card = new java.util.LinkedHashMap<>();
+            card.put("schema", "2.0");
+            card.put("config", java.util.Map.of("update_multi", true));
+            card.put("header", java.util.Map.of(
+                    "title", java.util.Map.of("tag", "plain_text", "content", "数字员工数据看板"),
+                    "template", "blue"));
+            card.put("body", java.util.Map.of("elements", elements));
+            return objectMapper.writeValueAsString(card);
+        } catch (Exception e) {
+            log.error("[飞书] 数据卡片构建失败（回退纯文本）: {}", e.getMessage());
             return null;
         }
     }

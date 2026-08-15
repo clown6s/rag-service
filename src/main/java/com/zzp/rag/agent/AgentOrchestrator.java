@@ -32,8 +32,12 @@ public class AgentOrchestrator {
 
     /** 预检索未命中但存在 MCP 技能时的上下文提示（放行 Agent 工具循环，工具无果仍回兜底句式） */
     private static final String MCP_FALLBACK_CONTEXT =
-            "文档检索未命中。你可以调用已授权的业务系统工具（如公司制度查询、员工目录）回答；"
-                    + "工具也没有结果时输出\"根据现有资料，暂无法回答该问题\"。";
+            "文档检索未命中。你可以调用已授权的业务系统工具回答用户：\n"
+                    + "- 公司经营数据/营收/成本/利润/业绩 → oa_business_metrics\n"
+                    + "- 员工报销记录/费用明细/花了多少钱 → oa_employee_expenses\n"
+                    + "- 员工目录/部门架构/请假申请审批 → 对应 OA 工具\n"
+                    + "数据类问题必须先调用对应工具获取数据再回答，不得跳过工具直接输出兜底；"
+                    + "只有工具也没有结果时，才输出\"根据现有资料，暂无法回答该问题\"。";
 
     private final ChatModel chatModel;
     private final StreamingChatModel streamingChatModel;
@@ -220,6 +224,11 @@ public class AgentOrchestrator {
                     pre.graphContext().length(), mcpUsed,
                     runtime != null ? runtime.employeeId() : 0);
         } finally {
+            // 图表数据：工具线程置入 → 暂存 sink → 飞书桥渲染图表卡片
+            java.util.Map<String, Object> chart = com.zzp.rag.mcp.McpCallTracker.consumeChartData();
+            if (chart != null) {
+                com.zzp.rag.mcp.McpChartSink.put(chart);
+            }
             employeeContext.unbind(conversationId);
             com.zzp.rag.mcp.McpCallTracker.clear();
             agentTools.clear();
