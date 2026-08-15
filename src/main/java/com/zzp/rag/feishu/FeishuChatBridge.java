@@ -34,6 +34,9 @@ public class FeishuChatBridge {
     private final FeishuClient client;
     private final AgentOrchestrator orchestrator;
     private final com.zzp.rag.agent.DocWizardService docWizardService;
+    private final com.zzp.rag.feishu.FeishuFileContextService fileContextService;
+    private final com.zzp.rag.ingestion.DocumentParser documentParser;
+    private final com.zzp.rag.ingestion.IngestionPipeline ingestionPipeline;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
 
@@ -53,12 +56,18 @@ public class FeishuChatBridge {
     public FeishuChatBridge(FeishuConfig config, FeishuClient client,
                             AgentOrchestrator orchestrator,
                             com.zzp.rag.agent.DocWizardService docWizardService,
+                            FeishuFileContextService fileContextService,
+                            com.zzp.rag.ingestion.DocumentParser documentParser,
+                            com.zzp.rag.ingestion.IngestionPipeline ingestionPipeline,
                             AuditService auditService,
                             ObjectMapper objectMapper) {
         this.config = config;
         this.client = client;
         this.orchestrator = orchestrator;
         this.docWizardService = docWizardService;
+        this.fileContextService = fileContextService;
+        this.documentParser = documentParser;
+        this.ingestionPipeline = ingestionPipeline;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
     }
@@ -101,7 +110,21 @@ public class FeishuChatBridge {
         String query = null;
         long start = System.currentTimeMillis();
         try {
-            if (!"text".equals(messageType) || chatId == null || chatId.isBlank()) {
+            if (chatId == null || chatId.isBlank()) {
+                log.info("[飞书] 跳过：缺少 chatId type={}", messageType);
+                return;
+            }
+            // 转发文件：下载 → 解析 → 建立会话文件上下文（后续提问自动结合文件作答）
+            if ("file".equals(messageType)) {
+                handleFileMessage(chatId, messageId, contentJson, auditUser, ctx, start);
+                return;
+            }
+            if ("image".equals(messageType)) {
+                client.replyMessage(messageId,
+                        "图片暂不支持解析，请发送文件（docx / pdf / xlsx / pptx / txt 等）。");
+                return;
+            }
+            if (!"text".equals(messageType)) {
                 log.info("[飞书] 跳过非文本消息 chat={} type={}", chatId, messageType);
                 return;
             }
@@ -115,6 +138,19 @@ public class FeishuChatBridge {
             // 文档向导：key = 会话+用户（与卡片回调、takePending 的 key 必须一致）
             String wizardUser = auditUser;
             String wizardKey = chatId + ":" + (wizardUser == null ? "anon" : wizardUser);
+
+            // 转发文件上下文指令（入库/清除）——优先于向导与其他路由
+            FeishuFileContextService.FileCtx fileCtx = fileContextService.get(chatId, wizardUser);
+            if (fileCtx != null && query.strip().matches("入库|收入知识库|加入知识库|存到知识库|存入知识库")) {
+                ingestFileToKb(fileCtx, chatId, messageId, wizardUser, ctx, start);
+                return;
+            }
+            if (fileCtx != null && query.strip().matches("清除文件|移除文件|不用这个文件了|删掉文件")) {
+                fileContextService.clear(chatId, wizardUser);
+                client.replyMessage(messageId, "已移除文件《" + fileCtx.fileName()
+                        + "》，后续提问回到知识库模式。");
+                return;
+            }
 
             // 新触发：弹表单卡片（input/select 一次填完），不再文字追问
             if (docWizardService.isFreshTrigger(wizardKey, query)) {
@@ -198,6 +234,109 @@ public class FeishuChatBridge {
                     auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/chat",
                     null, query, 0, List.of(), 0,
                     false, 0, null, 0,
+                    System.currentTimeMillis() - start, "FAILED", e.getMessage(), 0));
+        }
+    }
+
+    /**
+     * 转发文件处理：下载素材 → 解析（sidecar 双通道/Tika）→ 建立会话文件上下文。
+     * 之后该会话的提问自动注入文件内容作答（见 AgentOrchestrator 的 promptBlock 注入）。
+     */
+    private void handleFileMessage(String chatId, String messageId, String contentJson,
+                                   String auditUser, AuditEvent.AuditContext ctx, long start) {
+        try {
+            JsonNode node = objectMapper.readTree(contentJson);
+            String fileKey = node.path("file_key").asText(null);
+            String fileNameHint = node.path("file_name").asText(null);
+            if (fileKey == null || fileKey.isBlank()) {
+                client.replyMessage(messageId, "未识别到文件，请重新转发。");
+                return;
+            }
+            FeishuClient.DownloadedFile df = client.downloadResource(messageId, fileKey);
+            if (df == null || df.bytes() == null || df.bytes().length == 0) {
+                client.replyMessage(messageId, "文件下载失败，请重试（较大文件可稍等片刻再发）。");
+                auditService.record(new AuditEvent(
+                        ctx.traceId(),
+                        LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                        auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/file",
+                        null, fileNameHint, 0, List.of(), 0, false, 0, null, 0,
+                        System.currentTimeMillis() - start, "FAILED", "下载失败", 0));
+                return;
+            }
+            String fileName = (fileNameHint != null && !fileNameHint.isBlank())
+                    ? fileNameHint : df.fileName();
+            long parseStart = System.currentTimeMillis();
+            com.zzp.rag.ingestion.ParsedDocument parsed = documentParser.parse(
+                    new com.zzp.rag.ingestion.ByteMultipartFile(fileName, df.bytes()));
+            String text = parsed.text();
+            log.info("[飞书] 文件解析完成 file={} chars={} 耗时 {}ms",
+                    fileName, text == null ? 0 : text.length(),
+                    System.currentTimeMillis() - parseStart);
+            if (text == null || text.isBlank()) {
+                client.replyMessage(messageId,
+                        "文件内容为空或无法解析（纯图片请发送 PDF 版或文字版）。");
+                return;
+            }
+            boolean truncated = text.length() > FeishuFileContextService.MAX_CONTENT_CHARS;
+            String stored = truncated ? text.substring(0, FeishuFileContextService.MAX_CONTENT_CHARS) : text;
+            fileContextService.put(chatId, auditUser, fileName, stored, messageId, fileKey);
+            client.replyMessage(messageId,
+                    "已解析《" + fileName + "》（" + text.length() + " 字"
+                            + (truncated ? "，超出 6 万字部分未保留" : "") + "）。\n"
+                            + "接下来的提问我会结合这份文件回答；\n"
+                            + "回复「入库」把文件收入知识库；回复「清除文件」移除。");
+            auditService.record(new AuditEvent(
+                    ctx.traceId(),
+                    LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                    auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/file",
+                    null, fileName, 0, List.of(), 0, false, 0,
+                    "chars=" + text.length(), text.length(),
+                    System.currentTimeMillis() - start, "SUCCESS", null, 0));
+        } catch (Exception e) {
+            log.error("[飞书] 文件消息处理失败", e);
+            client.replyMessage(messageId, "文件解析失败：" + e.getMessage());
+            auditService.record(new AuditEvent(
+                    ctx.traceId(),
+                    LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                    auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/file",
+                    null, null, 0, List.of(), 0, false, 0, null, 0,
+                    System.currentTimeMillis() - start, "FAILED", e.getMessage(), 0));
+        }
+    }
+
+    /** 「入库」：重新下载原始字节 → 摄入管线（向量化+Milvus+图谱异步）→ 清理会话上下文 */
+    private void ingestFileToKb(FeishuFileContextService.FileCtx fc, String chatId,
+                                String messageId, String user,
+                                AuditEvent.AuditContext ctx, long start) {
+        try {
+            client.replyMessage(messageId,
+                    "收到，正在把《" + fc.fileName() + "》写入知识库，约需半分钟…");
+            FeishuClient.DownloadedFile df = client.downloadResource(fc.messageId(), fc.fileKey());
+            if (df == null) {
+                client.replyMessage(messageId, "入库失败：文件已过期，请重新转发后再试。");
+                return;
+            }
+            String docId = ingestionPipeline.ingest(
+                    new com.zzp.rag.ingestion.ByteMultipartFile(fc.fileName(), df.bytes()),
+                    fc.fileName(), "飞书转发");
+            fileContextService.clear(chatId, user);
+            client.replyMessage(messageId,
+                    "已入库《" + fc.fileName() + "》，现在知识库检索可以找到它了。");
+            auditService.record(new AuditEvent(
+                    ctx.traceId(),
+                    LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                    user != null ? user : ctx.user(), ctx.ip(), "feishu/file_ingest",
+                    null, fc.fileName(), 0, List.of(), 0, false, 0,
+                    docId, fc.content().length(),
+                    System.currentTimeMillis() - start, "SUCCESS", null, 0));
+        } catch (Exception e) {
+            log.error("[飞书] 文件入库失败 file={}", fc.fileName(), e);
+            client.replyMessage(messageId, "入库失败：" + e.getMessage());
+            auditService.record(new AuditEvent(
+                    ctx.traceId(),
+                    LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                    user != null ? user : ctx.user(), ctx.ip(), "feishu/file_ingest",
+                    null, fc.fileName(), 0, List.of(), 0, false, 0, null, 0,
                     System.currentTimeMillis() - start, "FAILED", e.getMessage(), 0));
         }
     }

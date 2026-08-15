@@ -326,7 +326,95 @@ public class FeishuClient {
                 : config.baseUrl() + "/docx/" + documentId;
     }
 
-    // ==================== 文件消息（文档生成定稿推送） ====================
+    // ==================== 文件消息（文档生成定稿推送 + 转发文件下载） ====================
+
+    /** 下载资源（用户转发给机器人的文件/图片）→ 字节 + 推测文件名 */
+    public record DownloadedFile(byte[] bytes, String fileName) {}
+
+    /** 下载消息资源文件：GET im/v1/messages/{message_id}/resources/{file_key}?type=file */
+    public DownloadedFile downloadResource(String messageId, String fileKey) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return null;
+            }
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/im/v1/messages/"
+                                    + java.net.URLEncoder.encode(messageId, StandardCharsets.UTF_8)
+                                    + "/resources/" + java.net.URLEncoder.encode(fileKey, StandardCharsets.UTF_8)
+                                    + "?type=file"))
+                    .timeout(Duration.ofSeconds(60))
+                    .header("Authorization", "Bearer " + token)
+                    .GET()
+                    .build();
+            HttpResponse<byte[]> resp = http.send(req, HttpResponse.BodyHandlers.ofByteArray());
+            if (resp.statusCode() != 200 || resp.body() == null || resp.body().length == 0) {
+                log.warn("[飞书] 文件下载失败 http={} len={}", resp.statusCode(),
+                        resp.body() == null ? 0 : resp.body().length);
+                return null;
+            }
+            String fileName = fileNameFromDisposition(
+                    resp.headers().firstValue("Content-Disposition").orElse(null));
+            if (fileName == null) {
+                fileName = fileNameFromContentType(
+                        resp.headers().firstValue("Content-Type").orElse(null));
+            }
+            return new DownloadedFile(resp.body(), fileName);
+        } catch (Exception e) {
+            log.warn("[飞书] 文件下载异常: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** Content-Disposition 提取文件名（兼容 filename 与 filename*=UTF-8''） */
+    private String fileNameFromDisposition(String disposition) {
+        if (disposition == null) {
+            return null;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("filename\\*?=(?:UTF-8''|\")?([^\";]+)\"?", java.util.regex.Pattern.CASE_INSENSITIVE)
+                .matcher(disposition);
+        if (m.find()) {
+            String name = m.group(1).trim();
+            if (!name.isBlank()) {
+                return name;
+            }
+        }
+        return null;
+    }
+
+    /** Content-Type 反推扩展名（文件消息不带文件名时保证 DocumentParser 走对解析通道） */
+    private String fileNameFromContentType(String contentType) {
+        if (contentType == null) {
+            return "feishu_file.bin";
+        }
+        String ct = contentType.toLowerCase();
+        if (ct.contains("pdf")) {
+            return "feishu_file.pdf";
+        }
+        if (ct.contains("wordprocessingml")) {
+            return "feishu_file.docx";
+        }
+        if (ct.contains("spreadsheetml")) {
+            return "feishu_file.xlsx";
+        }
+        if (ct.contains("presentationml")) {
+            return "feishu_file.pptx";
+        }
+        if (ct.contains("msword")) {
+            return "feishu_file.doc";
+        }
+        if (ct.startsWith("text/") || ct.contains("plain")) {
+            return "feishu_file.txt";
+        }
+        if (ct.contains("csv")) {
+            return "feishu_file.csv";
+        }
+        if (ct.contains("zip")) {
+            return "feishu_file.zip";
+        }
+        return "feishu_file.bin";
+    }
 
     /** 上传文件到飞书素材库 → file_key（失败返回 null） */
     public String uploadFile(String fileName, byte[] bytes) {

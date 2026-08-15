@@ -50,6 +50,7 @@ public class AgentOrchestrator {
     private final EmployeeContext employeeContext;
     private final com.zzp.rag.workflow.SopRegistry sopRegistry;
     private final com.zzp.rag.workflow.SopEngine sopEngine;
+    private final com.zzp.rag.feishu.FeishuFileContextService fileContextService;
 
     /** 答案校验开关：生成后由小模型对照检索资料逐句核查，删除无依据内容（编造的最后防线） */
     @Value("${rag.agent.verify.enabled:true}")
@@ -70,7 +71,8 @@ public class AgentOrchestrator {
             com.zzp.rag.skill.registry.SkillRegistryToolProvider skillRegistryToolProvider,
             EmployeeContext employeeContext,
             com.zzp.rag.workflow.SopRegistry sopRegistry,
-            com.zzp.rag.workflow.SopEngine sopEngine) {
+            com.zzp.rag.workflow.SopEngine sopEngine,
+            com.zzp.rag.feishu.FeishuFileContextService fileContextService) {
         this.chatModel = chatModel;
         this.streamingChatModel = streamingChatModel;
         this.reasonerModel = reasonerModel;
@@ -86,6 +88,7 @@ public class AgentOrchestrator {
         this.employeeContext = employeeContext;
         this.sopRegistry = sopRegistry;
         this.sopEngine = sopEngine;
+        this.fileContextService = fileContextService;
     }
 
     public record AgentAnswer(String answer, List<String> sources, String route,
@@ -143,11 +146,15 @@ public class AgentOrchestrator {
         }
         String route = route(query);
         log.info("[Agent] 路由: {} → {}", query, route);
+        // 会话转发文件上下文（飞书文件消息解析后建立；Web 会话 key 不同不会误注入）
+        String fileBlock = fileContextService.promptBlock(
+                conversationId, wizardUser == null ? "anon" : wizardUser);
         if ("CHAT".equals(route)) {
-            return new AgentAnswer(chatDirect(query, runtime), List.of(), route, false, 0, false,
-                    runtime != null ? runtime.employeeId() : 0);
+            return new AgentAnswer(chatDirect(query, runtime, fileBlock), List.of(), route,
+                    false, 0, false, runtime != null ? runtime.employeeId() : 0);
         }
-        if ("CLARIFY".equals(route) && CLARIFY_GUARD.matcher(query).find()) {
+        if ("CLARIFY".equals(route) && CLARIFY_GUARD.matcher(query).find() && fileBlock.isEmpty()) {
+            // 有会话文件上下文时不走澄清：短问题大概率指向文件内容，直接以文件作答
             return new AgentAnswer(clarify(query), List.of(), route, false, 0, false,
                     runtime != null ? runtime.employeeId() : 0);
         }
@@ -169,15 +176,17 @@ public class AgentOrchestrator {
             boolean retrievalEmpty = mcpSkillsAvailable
                     ? pre.segments().isEmpty()
                     : pre.segments().isEmpty() && pre.graphContext().isBlank();
-            if (retrievalEmpty && !mcpSkillsAvailable) {
+            if (retrievalEmpty && !mcpSkillsAvailable && fileBlock.isEmpty()) {
                 log.info("[Agent] 预检索无结果，使用确定性兜底回答");
                 return new AgentAnswer(NO_ANSWER, List.of(), route, pre.rerankDegraded(),
                         pre.graphContext().length(), false,
                         runtime != null ? runtime.employeeId() : 0);
             }
             String context = retrievalEmpty
-                    ? MCP_FALLBACK_CONTEXT
-                    : retrievalPipeline.buildContext(pre, 3000);
+                    ? (fileBlock.isEmpty()
+                            ? MCP_FALLBACK_CONTEXT
+                            : fileBlock + "请仅依据以上文件内容回答；文件未涉及的信息如实说明「文件未提及」。")
+                    : fileBlock + retrievalPipeline.buildContext(pre, 3000);
             // 图谱-only：文档片段全被阈值过滤、仅图谱非空（授权过宽重灾区，需收紧）
             boolean graphOnly = !retrievalEmpty && pre.segments().isEmpty() && !pre.graphContext().isBlank();
             long agentStart = System.currentTimeMillis();
@@ -830,9 +839,14 @@ public class AgentOrchestrator {
                 .formatted(runtime.persona(), query);
     }
 
-    private String chatDirect(String query, EmployeeContext.EmployeeRuntime runtime) {
+    private String chatDirect(String query, EmployeeContext.EmployeeRuntime runtime, String fileBlock) {
         long start = System.currentTimeMillis();
         String prompt = chatPrompt(query, runtime);
+        if (!fileBlock.isEmpty()) {
+            // 会话有转发文件：文件内容是合法作答依据（覆盖"不得编造"的边界）
+            prompt = prompt + "\n\n" + fileBlock
+                    + "以上文件内容可作为作答依据；文件未涉及的内容仍按原规则如实说明。";
+        }
         String out = turboModel.chat(prompt);   // 闲聊分级：turbo 小模型（成本/延迟优先）
         usageTracker.record("qwen-turbo", "chat", prompt.length(), out == null ? 0 : out.length(),
                 System.currentTimeMillis() - start);
