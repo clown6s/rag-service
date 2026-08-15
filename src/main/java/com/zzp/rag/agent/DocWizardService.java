@@ -55,6 +55,10 @@ public class DocWizardService {
     /** 免责脚注（所有出文渠道共用） */
     public static final String FOOTER = "---\n\n本文引用资料以知识库原文为准，由 AI 辅助生成，请人工核对后发布。";
 
+    /** 云文档内嵌协作提示（文档末尾：告诉用户在文档页可直接编辑，或回群聊让 AI 同步修改） */
+    public static final String CLOUD_HINT =
+            "如需调整：可直接在本页编辑，或在群聊中回复修改要求（如「第二段精简」），AI 会同步更新本文档。";
+
     private static final long TTL_MS = 10 * 60_000L;
 
     private final ConcurrentHashMap<String, State> states = new ConcurrentHashMap<>();
@@ -196,7 +200,7 @@ public class DocWizardService {
                 return null;
             }
             java.util.List<String> blockIds = feishuClient.writeCloudDocBlocks(docId,
-                    toBlocksForExport(content + "\n\n" + FOOTER, title));
+                    toBlocksForExport(content + "\n\n" + FOOTER + "\n\n" + CLOUD_HINT, title));
             if (blockIds == null || blockIds.isEmpty()) {
                 return null;
             }
@@ -228,7 +232,7 @@ public class DocWizardService {
                 feishuClient.clearCloudDocChildren(s.cloudDocId, cur.blockCount(), cur.revisionId());
             }
             java.util.List<String> ids = feishuClient.writeCloudDocBlocks(s.cloudDocId,
-                    toBlocksForExport(s.content + "\n\n" + FOOTER, s.title));
+                    toBlocksForExport(s.content + "\n\n" + FOOTER + "\n\n" + CLOUD_HINT, s.title));
             if (ids == null || ids.isEmpty()) {
                 return false;
             }

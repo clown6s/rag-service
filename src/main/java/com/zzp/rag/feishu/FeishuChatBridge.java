@@ -53,10 +53,6 @@ public class FeishuChatBridge {
     private final java.util.concurrent.ConcurrentHashMap<String, Boolean> formInFlight =
             new java.util.concurrent.ConcurrentHashMap<>();
 
-    /** 工作台（文档编辑器）前端地址：生成后「在编辑器中修改」按钮跳转用 */
-    @org.springframework.beans.factory.annotation.Value("${rag.studio.base-url:http://localhost:5174}")
-    private String studioBaseUrl;
-
     public FeishuChatBridge(FeishuConfig config, FeishuClient client,
                             AgentOrchestrator orchestrator,
                             com.zzp.rag.agent.DocWizardService docWizardService,
@@ -161,9 +157,8 @@ public class FeishuChatBridge {
                     && docWizardService.canDirectGenerate(query)) {
                 com.zzp.rag.agent.DocWizardService.DirectResult r =
                         docWizardService.directGenerate(wizardKey, query, auditUser);
-                String studioUrl = studioBaseUrl + "/studio?doc=" + r.studioDocId();
                 if (r.cloudUrl() != null) {
-                    String card = buildDocResultCard(r.title(), r.cloudUrl(), studioUrl);
+                    String card = buildDocResultCard(r.title(), r.cloudUrl());
                     if (card == null || !client.replyCard(messageId, card)) {
                         client.replyMessage(messageId,
                                 "已生成《" + r.title() + "》云文档：\n" + r.cloudUrl());
@@ -176,7 +171,7 @@ public class FeishuChatBridge {
                     if (fileKey != null) {
                         client.sendFileMessage(chatId, fileKey);
                     }
-                    String card = buildDocResultCard(r.title(), null, studioUrl);
+                    String card = buildDocResultCard(r.title(), null);
                     if (card == null || !client.replyCard(messageId, card)) {
                         client.replyMessage(messageId, "已生成《" + r.title() + "》docx 文件并发送到会话。");
                     }
@@ -501,31 +496,22 @@ public class FeishuChatBridge {
         }
     }
 
-    /** 表单提交结果卡片：云文档链接 + H5 编辑器跳转（url 为 null 表示回退文件已发） */
-    private String buildDocResultCard(String title, String url, String studioUrl) {
+    /** 表单提交结果卡片：只留「打开云文档」（url 为 null 表示回退文件已发）；
+     *  不跳后台工作台——云文档本身就是编辑器，修改走群聊指令回写同一份 */
+    private String buildDocResultCard(String title, String url) {
         java.util.List<Object> elements = new java.util.ArrayList<>();
         elements.add(java.util.Map.of("tag", "markdown",
                 "content", url != null
                         ? "已生成《" + title + "》，可直接在线编辑。"
                         : "已生成《" + title + "》docx 文件并发送到会话，请查收。"));
 
-        java.util.List<Object> actions = new java.util.ArrayList<>();
         if (url != null) {
-            actions.add(java.util.Map.of("tag", "button",
-                    "text", java.util.Map.of("tag", "plain_text", "content", "打开云文档"),
-                    "type", "primary",
-                    "url", url,
-                    "value", java.util.Map.of("action", "open_doc")));
-        }
-        if (studioUrl != null && !studioUrl.isBlank()) {
-            actions.add(java.util.Map.of("tag", "button",
-                    "text", java.util.Map.of("tag", "plain_text", "content", "在编辑器中修改"),
-                    "type", "default",
-                    "url", studioUrl,
-                    "value", java.util.Map.of("action", "open_studio")));
-        }
-        if (!actions.isEmpty()) {
-            elements.add(java.util.Map.of("tag", "action", "actions", actions));
+            elements.add(java.util.Map.of("tag", "action", "actions", java.util.List.of(
+                    java.util.Map.of("tag", "button",
+                            "text", java.util.Map.of("tag", "plain_text", "content", "打开云文档"),
+                            "type", "primary",
+                            "url", url,
+                            "value", java.util.Map.of("action", "open_doc")))));
         }
         elements.add(java.util.Map.of("tag", "note", "elements",
                 java.util.List.of(java.util.Map.of("tag", "plain_text",
@@ -608,9 +594,8 @@ public class FeishuChatBridge {
                         com.zzp.rag.agent.DocWizardService.FormResult result =
                                 docWizardService.submitForm(key, docType, title, points, tone, issuer, operator);
                         String url = result.cloudUrl();
-                        String studioUrl = studioBaseUrl + "/studio?doc=" + result.docId();
                         if (url != null) {
-                            String card = buildDocResultCard(title, url, studioUrl);
+                            String card = buildDocResultCard(title, url);
                             if (card == null || !client.updateCard(openMessageId, card)) {
                                 client.replyMessage(openMessageId,
                                         "文档已创建为飞书云文档（在线可编辑）：\n" + url);
@@ -623,7 +608,7 @@ public class FeishuChatBridge {
                             if (fileKey != null) {
                                 client.sendFileMessage(openChatId, fileKey);
                             }
-                            String card = buildDocResultCard(title, null, studioUrl);
+                            String card = buildDocResultCard(title, null);
                             if (card == null || !client.updateCard(openMessageId, card)) {
                                 client.replyMessage(openMessageId,
                                         "已生成《" + title + "》docx 文件并发送到会话。");
