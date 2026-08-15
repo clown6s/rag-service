@@ -155,6 +155,7 @@ public class FeishuChatBridge {
         String md = markdown.length() > 6000
                 ? markdown.substring(0, 6000) + "\n\n…（内容过长已截断，完整内容请在 Web 端查看）"
                 : markdown;
+        md = toCardMarkdown(md);   // 飞书卡片 markdown 不支持表格，先展平
         String sourceNote = sources.isEmpty() ? "无来源" : String.join("、", sources);
 
         java.util.Map<String, Object> regenValue = new java.util.LinkedHashMap<>();
@@ -258,7 +259,17 @@ public class FeishuChatBridge {
                 .replaceAll("(?i)<br\\s*/?>", "\n")
                 .replaceAll("<[^>]+>", "")
                 .replaceAll("(?m)^[\\s>]*>\\s*", "");
-        // 表格 → 可读文本：纯文本渠道里管道符形态很丑（"| 年限 | 天数 |"）
+        return flattenTables(text);
+    }
+
+    /** 卡片 markdown：飞书卡片 markdown 不支持 GFM 表格（会退化成裸管道符行），
+     *  仅展平表格为可读文本，其余 markdown 语法（标题/加粗/列表）保留给卡片渲染 */
+    private String toCardMarkdown(String markdown) {
+        return flattenTables(markdown);
+    }
+
+    /** 表格 → 可读文本：分隔行（|---|---|）删除、数据行去首尾管道、中间管道换全角 ｜ */
+    private String flattenTables(String text) {
         StringBuilder sb = new StringBuilder();
         for (String line : text.split("\n", -1)) {
             String stripped = line.strip();
