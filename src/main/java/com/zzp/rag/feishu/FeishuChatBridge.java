@@ -268,18 +268,43 @@ public class FeishuChatBridge {
         return flattenTables(markdown);
     }
 
-    /** 表格 → 可读文本：分隔行（|---|---|）删除、数据行去首尾管道、中间管道换全角 ｜ */
+    /** 表格 → 可读文本：分隔行（|---|---|）删除、数据行去首尾管道、中间管道换全角 ｜。
+     *  空单元格继承上一行同列（模型习惯：重复的部门名只写一次，"| | 陈杰 | …" 补 "研发部"）；
+     *  连续表格段的首行视为表头，不向下继承（防止表头列名泄漏进数据行）。 */
     private String flattenTables(String text) {
         StringBuilder sb = new StringBuilder();
+        String[] prevCells = null;
+        boolean prevIsHeader = false;
         for (String line : text.split("\n", -1)) {
             String stripped = line.strip();
             if (stripped.matches("\\|[\\s|:\\-]+\\|")) {
                 continue;   // 分隔行（|---|---|）删除
             }
+            if (stripped.isEmpty()) {
+                sb.append(line).append('\n');
+                continue;   // 空行不打断继承链（分隔行删除后留的空行）
+            }
             if (stripped.startsWith("|") && stripped.endsWith("|") && stripped.indexOf('|', 1) >= 0) {
                 String inner = stripped.substring(1, stripped.length() - 1);
-                sb.append(inner.replace("|", "｜").strip());
+                String[] cells = inner.split("\\|", -1);
+                for (int i = 0; i < cells.length; i++) {
+                    cells[i] = cells[i].strip();
+                }
+                if (prevCells == null) {
+                    prevIsHeader = true;   // 段首行 = 表头
+                } else if (!prevIsHeader) {
+                    for (int i = 0; i < cells.length && i < prevCells.length; i++) {
+                        if (cells[i].isEmpty() && !prevCells[i].isEmpty()) {
+                            cells[i] = prevCells[i];
+                        }
+                    }
+                } else {
+                    prevIsHeader = false;
+                }
+                prevCells = cells;
+                sb.append(String.join(" ｜ ", cells));
             } else {
+                prevCells = null;   // 非表格行打断继承链
                 sb.append(line);
             }
             sb.append('\n');

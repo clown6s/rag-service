@@ -161,17 +161,16 @@ public final class StreamTokenFixer {
         return anyContent ? sb.append("|").toString() : null;
     }
 
-    /** 悬空表头行：空壳数据行删除后残留的孤立多列表格行（前后均非表格行，
-     *  单元格均短且无句读——表头特征）→ 删除。单行双列表格（"| 结论 | … |"）保留。 */
+    /** 悬空表头行：空壳数据行删除后残留的孤立多列表格行（跨空行看前后均无表格行，
+     *  单元格均短且无句读——表头特征）→ 删除。单行双列表格（"| 结论 | … |"）保留。
+     *  邻接判定跨空行：分隔行（|---|---|）删除后留的空行不算隔断，正常表头要保留。 */
     private static java.util.List<String> dropLoneHeaderRows(java.util.List<String> lines) {
         for (int i = 0; i < lines.size(); i++) {
             String s = lines.get(i).strip();
             if (!s.startsWith("|") || !s.endsWith("|")) {
                 continue;
             }
-            boolean prevRow = i > 0 && isTableRow(lines.get(i - 1));
-            boolean nextRow = i + 1 < lines.size() && isTableRow(lines.get(i + 1));
-            if (prevRow || nextRow) {
+            if (hasTableNeighbor(lines, i, +1) || hasTableNeighbor(lines, i, -1)) {
                 continue;
             }
             String inner = s.substring(1, s.length() - 1);
@@ -194,6 +193,18 @@ public final class StreamTokenFixer {
             }
         }
         return lines;
+    }
+
+    /** 跨空行找表格行邻居（分隔行删除后留的空行视为透明） */
+    private static boolean hasTableNeighbor(java.util.List<String> lines, int from, int step) {
+        for (int i = from + step; i >= 0 && i < lines.size(); i += step) {
+            String s = lines.get(i).strip();
+            if (s.isEmpty()) {
+                continue;
+            }
+            return isTableRow(lines.get(i));
+        }
+        return false;
     }
 
     private static boolean isTableRow(String line) {
