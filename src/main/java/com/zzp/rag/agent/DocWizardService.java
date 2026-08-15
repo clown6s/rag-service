@@ -339,10 +339,13 @@ public class DocWizardService {
                 3. 用 markdown 组织：## 分节标题 + 段落；编号用 1. 2. 3.
                 4. 落款单独一段：%s 和今天日期（%s）
                 5. 引用资料里的条文必须逐字准确，不得改写数字与条款号
+                6. 今年是 %s 年：正文中涉及年份与星期必须与今年实际日历一致，
+                   不确定的星期几不要写
                 """.formatted(s.docType, s.title, s.tone,
                 s.points.isBlank() ? "（无额外要点，按常规结构撰写）" : s.points,
                 kb.isBlank() ? "" : kb,
-                s.issuer, java.time.LocalDate.now());
+                s.issuer, java.time.LocalDate.now(),
+                java.time.LocalDate.now().getYear());
     }
 
     private String buildRevisePrompt(String current, String instruction, String kb) {

@@ -138,16 +138,36 @@ public class DocAssistantService {
             doc.add(tp);
             doc.add(new com.lowagie.text.Paragraph(" "));
 
+            java.util.List<String> pdfLines = new java.util.ArrayList<>();
             for (String line : markdown.split("\n", -1)) {
                 String s = line.strip();
-                if (s.isEmpty() || s.startsWith("---")) {
-                    continue;
+                if (!s.isEmpty() && !s.startsWith("---")) {
+                    pdfLines.add(s);
+                }
+            }
+            java.util.Set<String> pdfSignoff = new java.util.HashSet<>();
+            for (int i = Math.max(0, pdfLines.size() - 4); i < pdfLines.size(); i++) {
+                String s = pdfLines.get(i);
+                if (s.matches("[\\u4e00-\\u9fa5]{2,12}")
+                        || s.matches("\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}")
+                        || s.matches("\\d{4}年\\d{1,2}月\\d{1,2}日")) {
+                    pdfSignoff.add(s);
+                }
+            }
+            for (String s : pdfLines) {
+                boolean isHeading = s.startsWith("#");
+                String h = isHeading ? s.replaceFirst("^#+\\s*", "") : s;
+                if (isHeading && h.equals(title == null || title.isBlank() ? "文档" : title)) {
+                    continue;   // 正文首行与标题重复
                 }
                 com.lowagie.text.Paragraph p;
-                if (s.startsWith("##") || s.startsWith("#")) {
-                    p = new com.lowagie.text.Paragraph(
-                            s.replaceFirst("^#+\\s*", ""), headFont);
+                if (isHeading) {
+                    p = new com.lowagie.text.Paragraph(h, headFont);
                     p.setSpacingBefore(10);
+                } else if (pdfSignoff.contains(s)) {
+                    p = new com.lowagie.text.Paragraph(s, font);
+                    p.setAlignment(com.lowagie.text.Element.ALIGN_RIGHT);
+                    p.setSpacingBefore(16);
                 } else {
                     p = new com.lowagie.text.Paragraph(s, font);
                     p.setFirstLineIndent(24);
@@ -162,36 +182,58 @@ public class DocAssistantService {
         }
     }
 
-    /** markdown 文本 → docx（标题居中加粗 + ## 分节 + 普通段落 + 列表缩进） */
+    /** markdown 文本 → docx（标题居中 + 分节加粗 + 正文首行缩进 + 落款右对齐 + 免责脚注灰字） */
     private byte[] buildDocx(String title, String markdown) {
         try (XWPFDocument doc = new XWPFDocument(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            String docTitle = title == null || title.isBlank() ? "文档" : title;
             XWPFParagraph tp = doc.createParagraph();
             tp.setAlignment(ParagraphAlignment.CENTER);
             XWPFRun tr = tp.createRun();
             tr.setBold(true);
             tr.setFontSize(16);
-            tr.setText(title == null || title.isBlank() ? "文档" : title);
+            tr.setText(docTitle);
 
+            // 收集非空内容行；末 4 行内短中文行/日期行按落款右对齐
+            java.util.List<String> content = new java.util.ArrayList<>();
             for (String line : markdown.split("\n", -1)) {
                 String s = line.strip();
-                if (s.isEmpty()) {
-                    continue;
+                if (!s.isEmpty() && !s.startsWith("---")) {
+                    content.add(s);
                 }
-                if (s.startsWith("---")) {
-                    continue;
+            }
+            java.util.Set<String> signoffCandidates = new java.util.HashSet<>();
+            for (int i = Math.max(0, content.size() - 4); i < content.size(); i++) {
+                String s = content.get(i);
+                if (s.matches("[\\u4e00-\\u9fa5]{2,12}")
+                        || s.matches("\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}")
+                        || s.matches("\\d{4}年\\d{1,2}月\\d{1,2}日")) {
+                    signoffCandidates.add(s);
+                }
+            }
+
+            for (String s : content) {
+                boolean isHeading = s.startsWith("#");
+                String h = isHeading ? s.replaceFirst("^#+\\s*", "") : s;
+                if (isHeading && h.equals(docTitle)) {
+                    continue;   // 正文首行与标题重复（LLM 常在正文里再写一遍标题）
                 }
                 XWPFParagraph p = doc.createParagraph();
                 XWPFRun r = p.createRun();
-                if (s.startsWith("##") || s.startsWith("#")) {
-                    String h = s.replaceFirst("^#+\\s*", "");
+                if (isHeading) {
                     r.setBold(true);
                     r.setFontSize(13);
                     r.setText(h);
-                } else if (s.matches("^\\d+[\\.、].*")) {
+                } else if (signoffCandidates.contains(s)) {
+                    // 落款：右对齐 + 与上文留白
+                    p.setAlignment(ParagraphAlignment.RIGHT);
+                    p.setSpacingBefore(120);
                     r.setText(s);
-                } else if (s.matches("^[-*•].*")) {
-                    r.setText("· " + s.replaceFirst("^[-*•]\\s*", ""));
+                } else if (s.matches("^\\d+[\\.、].*") || s.matches("^[-*•].*")) {
+                    // 列表项：无首行缩进，悬挂排布
+                    r.setText(s.matches("^[-*•].*") ? "· " + s.replaceFirst("^[-*•]\\s*", "") : s);
                 } else {
+                    // 正文段落：首行缩进两字符
+                    p.setIndentationFirstLine(480);
                     r.setText(s);
                 }
             }
