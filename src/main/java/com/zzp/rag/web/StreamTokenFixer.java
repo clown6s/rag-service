@@ -124,13 +124,81 @@ public final class StreamTokenFixer {
             if (!wellFormed) {
                 out.add(stripped.replace("|", " ").replaceAll("\\s{2,}", " ").strip());
             } else {
-                out.add(stripped
+                // 空壳单元格清理：模型/校验器删词后常残留纯标点单元格
+                // （"| ： | ： | ： | ： |"）；全空壳行整行删，部分空壳单元格置空
+                String cleaned = cleanShellCells(stripped);
+                if (cleaned == null) {
+                    out.add("");
+                    continue;
+                }
+                out.add(cleaned
                         .replaceAll("\\s*\\|\\s*", " | ")
                         .replaceAll("^\\|\\s*", "| ")
                         .replaceAll("\\s*\\|$", " |"));
             }
         }
-        return String.join("\n", out);
+        return String.join("\n", dropLoneHeaderRows(out));
+    }
+
+    /** 纯标点/空白单元格（"："、"-"、"…" 等空壳） */
+    private static final java.util.regex.Pattern SHELL_CELL =
+            java.util.regex.Pattern.compile("^[：:，,。.、；;！!？?…·*\\-–—~～\\s]*$");
+
+    /** 表格行空壳单元格清理：空壳单元格置空；全部空壳返回 null（整行删除） */
+    private static String cleanShellCells(String row) {
+        String inner = row.substring(1, row.length() - 1);
+        boolean anyContent = false;
+        StringBuilder sb = new StringBuilder();
+        for (String c : inner.split("\\|", -1)) {
+            String cell = c.strip();
+            if (SHELL_CELL.matcher(cell).matches()) {
+                sb.append("| ");
+            } else {
+                anyContent = true;
+                sb.append("| ").append(cell).append(" ");
+            }
+        }
+        return anyContent ? sb.append("|").toString() : null;
+    }
+
+    /** 悬空表头行：空壳数据行删除后残留的孤立多列表格行（前后均非表格行，
+     *  单元格均短且无句读——表头特征）→ 删除。单行双列表格（"| 结论 | … |"）保留。 */
+    private static java.util.List<String> dropLoneHeaderRows(java.util.List<String> lines) {
+        for (int i = 0; i < lines.size(); i++) {
+            String s = lines.get(i).strip();
+            if (!s.startsWith("|") || !s.endsWith("|")) {
+                continue;
+            }
+            boolean prevRow = i > 0 && isTableRow(lines.get(i - 1));
+            boolean nextRow = i + 1 < lines.size() && isTableRow(lines.get(i + 1));
+            if (prevRow || nextRow) {
+                continue;
+            }
+            String inner = s.substring(1, s.length() - 1);
+            String[] cells = inner.split("\\|", -1);
+            int nonEmpty = 0;
+            boolean headerLike = true;
+            for (String c : cells) {
+                String cell = c.strip();
+                if (cell.isEmpty()) {
+                    continue;
+                }
+                nonEmpty++;
+                if (cell.length() > 20 || cell.matches(".*[。！？；，、].*")) {
+                    headerLike = false;
+                    break;
+                }
+            }
+            if (headerLike && nonEmpty >= 3) {
+                lines.set(i, "");
+            }
+        }
+        return lines;
+    }
+
+    private static boolean isTableRow(String line) {
+        String s = line.strip();
+        return s.startsWith("|") && s.endsWith("|");
     }
 
     /**
