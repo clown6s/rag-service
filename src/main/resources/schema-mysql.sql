@@ -124,3 +124,17 @@ CREATE TABLE IF NOT EXISTS doc_acl (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_doc (doc_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档级访问控制';
+
+
+-- SOP 可视化配置：steps_json 为步骤数组 JSON（type: tool|llm|end）
+CREATE TABLE IF NOT EXISTS sop (
+  id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+  code       VARCHAR(64)  NOT NULL,
+  name       VARCHAR(128) NOT NULL,
+  keywords   VARCHAR(512) NOT NULL COMMENT '逗号分隔触发关键词',
+  steps_json TEXT         NOT NULL COMMENT '步骤数组：[{"type":"tool","toolName":"searchKnowledgeBase","instruction":null},...]',
+  enabled    TINYINT      NOT NULL DEFAULT 1,
+  builtin    TINYINT      NOT NULL DEFAULT 0,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='SOP 流程定义（后台可视化配置）';

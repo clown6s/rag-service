@@ -15,6 +15,30 @@ import java.util.List;
 @Component
 public class SopRegistry {
 
+    private final com.zzp.rag.mysql.service.SopStoreService sopStore;
+
+    /** DB SOP 缓存（30s TTL；管理后台变更后 reload() 立即生效） */
+    private volatile List<SopDefinition> dbDefs = List.of();
+    private volatile long dbLoadedAt = 0;
+
+    public SopRegistry(com.zzp.rag.mysql.service.SopStoreService sopStore) {
+        this.sopStore = sopStore;
+    }
+
+    /** 管理后台变更后调用：立即重载 DB SOP */
+    public void reload() {
+        dbDefs = sopStore.loadEnabled();
+        dbLoadedAt = System.currentTimeMillis();
+        log.info("[SOP] 已重载 DB 定义 {} 条", dbDefs.size());
+    }
+
+    private List<SopDefinition> dbDefinitions() {
+        if (System.currentTimeMillis() - dbLoadedAt > 30_000) {
+            reload();
+        }
+        return dbDefs;
+    }
+
     private static final List<SopDefinition> DEFS = List.of(
             new SopDefinition(
                     "leave_apply",
@@ -41,7 +65,7 @@ public class SopRegistry {
                                             + "资料完全无关时输出\"根据现有资料，暂无法回答该问题\"。"),
                             new SopDefinition.SopStep("end", null, null))));
 
-    /** 关键词匹配：用户问题包含任一关键词即命中（首个命中优先） */
+    /** 关键词匹配：内置优先，再查 DB 定义（用户问题包含任一关键词即命中） */
     public SopDefinition match(String query) {
         if (query == null || query.isBlank()) {
             return null;
@@ -54,10 +78,20 @@ public class SopRegistry {
                 }
             }
         }
+        for (SopDefinition def : dbDefinitions()) {
+            for (String kw : def.keywords()) {
+                if (query.contains(kw)) {
+                    log.info("[SOP] 命中 DB 定义 {}（关键词: {}）", def.code(), kw);
+                    return def;
+                }
+            }
+        }
         return null;
     }
 
     public List<SopDefinition> definitions() {
-        return DEFS;
+        List<SopDefinition> all = new java.util.ArrayList<>(DEFS);
+        all.addAll(dbDefinitions());
+        return all;
     }
 }
