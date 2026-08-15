@@ -34,6 +34,9 @@ public final class StreamTokenFixer {
     public static String fixFull(String text) {
         if (text == null) return text;
         String result = sanitizeCitations(fixToken(text));
+        // 0.0 字面 "\n" → 真换行：MCP 工具结果作答时模型偶发把换行写成字面反斜杠 n
+        //     （整段变一行 → 行级规则全部失效、卡片里显示 \n 乱码），须最先做
+        result = result.replace("\\n", "\n");
         // 0. 装饰性 emoji 剥除——模型的分节/强调标记漂移（✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯💡💊❗），
         //    语义由加粗承担；行首行内都剥（这些符号在本平台答案里纯装饰，无信息量）
         result = result.replaceAll("[✅📌⚠️🩺🌐📜⚖️🧩🔍🌟🎯💡💊❗⏳⌛]+\\s*", "");

@@ -90,6 +90,12 @@ public class AgentOrchestrator {
 
     public AgentAnswer answer(String conversationId, String query, Long agentId) {
         EmployeeContext.EmployeeRuntime runtime = employeeContext.resolve(agentId);
+        // 员工目录确定性直查（最优先：个人信息问法不能被 SOP/路由截胡，
+        // 实况："王强是什么时候入职的"被 onboard_guide SOP（关键词"入职"）拦截答了兜底）
+        AgentAnswer employeeAnswer = tryEmployeeLookup(query, "KNOWLEDGE_QA", runtime);
+        if (employeeAnswer != null) {
+            return employeeAnswer;
+        }
         // L2 SOP 优先：确定性流程命中直接执行（该严格的地方严格；失败回退 L3 常规路径）
         com.zzp.rag.workflow.SopDefinition sop = sopRegistry.match(query);
         if (sop != null) {
@@ -481,6 +487,16 @@ public class AgentOrchestrator {
 
     public void answerStream(String conversationId, String query, Long agentId, AgentStreamHandler handler) {
         EmployeeContext.EmployeeRuntime runtime = employeeContext.resolve(agentId);
+        // 员工目录确定性直查（最优先：个人信息问法不能被 SOP/路由截胡，
+        // 实况："王强是什么时候入职的"被 onboard_guide SOP（关键词"入职"）拦截答了兜底）
+        AgentAnswer employeeAnswer = tryEmployeeLookup(query, "KNOWLEDGE_QA", runtime);
+        if (employeeAnswer != null) {
+            handler.onRoute(employeeAnswer.route());
+            emitChunks(StreamTokenFixer.fixFull(employeeAnswer.answer()), handler);
+            handler.onComplete(employeeAnswer.route(), employeeAnswer.sources(), false, 0,
+                    false, employeeAnswer.employeeId());
+            return;
+        }
         // L2 SOP 优先（同非流式）：同步执行后分块回放，保持流式观感
         com.zzp.rag.workflow.SopDefinition sop = sopRegistry.match(query);
         if (sop != null) {
@@ -600,6 +616,48 @@ public class AgentOrchestrator {
             // chatStream 同步阶段异常（如记忆存取失败）——解绑并上报，防绑定泄漏
             employeeContext.unbind(conversationId);
             handler.onError(e);
+        }
+    }
+
+    /** 个人信息关键词（员工目录直查触发条件） */
+    private static final java.util.regex.Pattern EMPLOYEE_INFO_WORDS =
+            java.util.regex.Pattern.compile("入职|工号|部门|职位|岗位|什么时候|何时|哪一年|薪资|工资");
+
+    /**
+     * 员工目录确定性直查：问题含员工姓名 + 个人信息关键词时直接查目录作答。
+     * 不依赖 LLM 是否调用 employee_lookup（工具决策不稳定，实况：
+     * "王强是什么时候入职的"被图谱"王强→预算负责人"带偏，模型未调工具、答了兜底），
+     * 在预检索之前拦截，同名图谱实体不会污染上下文。
+     * 未启用 MCP 技能的员工不生效；未命中返回 null 走常规路径。
+     */
+    private AgentAnswer tryEmployeeLookup(String query, String route,
+                                          EmployeeContext.EmployeeRuntime runtime) {
+        try {
+            if (!EMPLOYEE_INFO_WORDS.matcher(query).find()) {
+                return null;
+            }
+            Long employeeId = runtime != null ? runtime.employeeId() : -1;
+            if (!skillRegistryToolProvider.mcpSkillsEnabled(employeeId)) {
+                return null;
+            }
+            java.util.List<String> hits = new java.util.ArrayList<>();
+            for (java.util.Map<String, String> emp : com.zzp.rag.mcp.demo.DemoMcpData.EMPLOYEES) {
+                if (query.contains(emp.get("name"))) {
+                    hits.add(com.zzp.rag.mcp.demo.DemoMcpData.lookupEmployee(emp.get("name")));
+                }
+            }
+            if (hits.isEmpty()) {
+                return null;
+            }
+            String answer = hits.size() == 1
+                    ? hits.get(0) + "。"
+                    : String.join("\n", hits);
+            log.info("[Agent] 员工目录直查命中 {} 人，确定性作答", hits.size());
+            return new AgentAnswer(answer, List.of(), route, false, 0, true,
+                    runtime != null ? runtime.employeeId() : 0);
+        } catch (Exception e) {
+            log.warn("[Agent] 员工目录直查异常，回退常规路径: {}", e.getMessage());
+            return null;
         }
     }
 

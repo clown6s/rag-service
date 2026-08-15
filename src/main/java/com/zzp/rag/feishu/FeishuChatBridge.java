@@ -263,9 +263,16 @@ public class FeishuChatBridge {
     }
 
     /** 卡片 markdown：飞书卡片 markdown 不支持 GFM 表格（会退化成裸管道符行），
-     *  仅展平表格为可读文本，其余 markdown 语法（标题/加粗/列表）保留给卡片渲染 */
+     *  仅展平表格为可读文本，其余 markdown 语法（标题/加粗/列表）保留给卡片渲染；
+     *  列表项之间插空行——卡片渲染器对列表支持不稳定，相邻列表项可能黏成一段 */
     private String toCardMarkdown(String markdown) {
-        return flattenTables(markdown);
+        String md = flattenTables(markdown);
+        // 缩进编号项 → 子弹点：卡片渲染器不支持嵌套有序列表（缩进丢失后 1,2,1,3 观感错乱），
+        // 子项转 "- " 后层级语义直观（外层 1. 2. 3.，子项 - 挂在所属项下）
+        md = md.replaceAll("(?m)^(\\s+)(\\d+\\.\\s)", "$1- ");
+        // 连续列表项（编号/无序）之间补空行，保证每项独立成段
+        md = md.replaceAll("(?m)(^(?:\\d+\\.|[-•🔹])\\s+.*)$(?=\\n(?:\\d+\\.|[-•🔹])\\s+)", "$1\n");
+        return md;
     }
 
     /** 表格 → 可读文本：分隔行（|---|---|）删除、数据行去首尾管道、中间管道换全角 ｜。
