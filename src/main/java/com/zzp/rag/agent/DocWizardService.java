@@ -45,8 +45,11 @@ public class DocWizardService {
 
     public record WizardResult(String reply, String route, String pendingFileName, byte[] pendingFile) {}
 
-    /** 表单一次性提交结果（飞书表单卡片）：生成全文 + 云文档链接（失败为 null） */
-    public record FormResult(String content, String cloudUrl) {}
+    /** 表单一次性提交结果（飞书表单卡片）：docId 供 H5 编辑器加载，cloudUrl 失败为 null */
+    public record FormResult(String docId, String content, String cloudUrl) {}
+
+    /** 工作台编辑器可加载的生成文档（内存存储，重启失效；仅供生成后编辑跳转用） */
+    public record StoredDoc(String title, String content) {}
 
     /** 免责脚注（所有出文渠道共用） */
     public static final String FOOTER = "---\n\n本文引用资料以知识库原文为准，由 AI 辅助生成，请人工核对后发布。";
@@ -54,6 +57,8 @@ public class DocWizardService {
     private static final long TTL_MS = 10 * 60_000L;
 
     private final ConcurrentHashMap<String, State> states = new ConcurrentHashMap<>();
+    /** 生成后编辑跳转的内容存档（docId → 标题+正文） */
+    private final ConcurrentHashMap<String, StoredDoc> studioDocs = new ConcurrentHashMap<>();
     private final DocAssistantService docAssistant;
     private final RetrievalPipeline retrievalPipeline;
     private final com.zzp.rag.feishu.FeishuClient feishuClient;
@@ -132,7 +137,20 @@ public class DocWizardService {
         s.issuer = issuer == null ? "" : issuer;
         s.content = content;
         states.put(key, s);
-        return new FormResult(content, url);
+        // 存档供 H5 编辑器加载（生成后编辑跳转）；上限 100 份，超出淘汰最旧
+        String docId = java.util.UUID.randomUUID().toString();
+        studioDocs.put(docId, new StoredDoc(title, content));
+        log.info("[文档向导] 表单生成存档 docId={}（供编辑器加载）", docId);
+        if (studioDocs.size() > 100) {
+            String oldest = studioDocs.keySet().iterator().next();
+            studioDocs.remove(oldest);
+        }
+        return new FormResult(docId, content, url);
+    }
+
+    /** 工作台编辑器按 docId 取生成内容（无则 null） */
+    public StoredDoc getStudioDoc(String docId) {
+        return docId == null ? null : studioDocs.get(docId);
     }
 
     /** 云文档直出：创建 + 写入（标题去重 + 缩进排版）+ 落款右对齐 + 组织内可读 → 链接；失败返回 null */

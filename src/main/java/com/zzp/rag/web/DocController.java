@@ -66,6 +66,19 @@ public class DocController {
         }
     }
 
+    /** 工作台按 docId 加载生成内容（飞书表单生成后「在编辑器中修改」跳转用） */
+    @org.springframework.web.bind.annotation.GetMapping("/studio/{docId}")
+    public ApiResponse<java.util.Map<String, String>> studioDoc(
+            @org.springframework.web.bind.annotation.PathVariable String docId) {
+        com.zzp.rag.agent.DocWizardService.StoredDoc doc = docWizardService.getStudioDoc(docId);
+        if (doc == null) {
+            return ApiResponse.fail("文档不存在或已过期，请重新生成");
+        }
+        return ApiResponse.ok(java.util.Map.of(
+                "title", doc.title() == null ? "" : doc.title(),
+                "markdown", doc.content() == null ? "" : doc.content()));
+    }
+
     /** AI 修改正文（按指令增量改 + 修改摘要） */
     @PostMapping("/revise-text")
     public ApiResponse<java.util.Map<String, String>> reviseText(@RequestBody ReviseTextRequest req) {
