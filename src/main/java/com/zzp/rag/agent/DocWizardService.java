@@ -453,10 +453,10 @@ public class DocWizardService {
                 text = s.replaceFirst("^#+\\s*", "");
             } else if (s.matches("^\\d+[\\.、].*")) {
                 type = 13;   // ordered 列表块 = 13（实测：12/13 反了会 400 invalid param）
-                text = s.replaceFirst("^\\d+[\\.、]\\s*", "");
+                text = "　" + s.replaceFirst("^\\d+[\\.、]\\s*", "");   // 编号后缩进对齐正文
             } else if (s.matches("^[-*•].*")) {
                 type = 12;   // bullet 列表块 = 12
-                text = s.replaceFirst("^[-*•]\\s*", "");
+                text = "　" + s.replaceFirst("^[-*•]\\s*", "");
             } else {
                 type = 2;
                 text = signoff.contains(s) ? s + "\u3000\u3000" : "\u3000\u3000" + s;
