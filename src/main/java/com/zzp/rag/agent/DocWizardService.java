@@ -477,6 +477,42 @@ public class DocWizardService {
         return blocks;
     }
 
+    /** 工作台云文档导出（复用向导同套排版规则；云文档自带标题，正文首行重复标题的 heading 移除） */
+    public java.util.List<java.util.Map<String, Object>> toBlocksForExport(String markdown, String title) {
+        if (title != null && !title.isBlank()) {
+            String[] lines = markdown.split("\n", 2);
+            String first = lines[0] == null ? "" : lines[0].strip();
+            if (first.startsWith("#")) {
+                String h = first.replaceFirst("^#+\\s*", "");
+                if (sameTitle(h, title.strip())) {
+                    markdown = lines.length > 1 ? lines[1] : "";
+                }
+            }
+        }
+        return toBlocks(markdown);
+    }
+
+    /** 同题异写判定：去数字空白后 LCS 相似度 ≥0.85（模型常加年份/机构修饰词，如"2026年""劳动节"） */
+    private static boolean sameTitle(String a, String b) {
+        String x = a.replaceAll("[\\s\\d]", "");
+        String y = b.replaceAll("[\\s\\d]", "");
+        if (x.length() < 5 || y.length() < 5) {
+            return x.equals(y);
+        }
+        int m = x.length(), n = y.length();
+        int[] prev = new int[n + 1];
+        for (int i = 1; i <= m; i++) {
+            int[] cur = new int[n + 1];
+            for (int j = 1; j <= n; j++) {
+                cur[j] = x.charAt(i - 1) == y.charAt(j - 1)
+                        ? prev[j - 1] + 1
+                        : Math.max(prev[j], cur[j - 1]);
+            }
+            prev = cur;
+        }
+        return prev[n] * 1.0 / Math.min(m, n) >= 0.85;
+    }
+
     /** 落款行集合（末 4 行内短中文行/日期行） */
     private java.util.Set<String> signoffLines(String markdown) {
         java.util.List<String> lines = new java.util.ArrayList<>();

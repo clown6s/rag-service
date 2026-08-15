@@ -32,14 +32,93 @@ public class DocController {
 
     private final DocAssistantService docAssistant;
     private final com.zzp.rag.agent.DocWizardService docWizardService;
+    private final com.zzp.rag.feishu.FeishuClient feishuClient;
     private final AuditService auditService;
 
     public DocController(DocAssistantService docAssistant,
                          com.zzp.rag.agent.DocWizardService docWizardService,
+                         com.zzp.rag.feishu.FeishuClient feishuClient,
                          AuditService auditService) {
         this.docAssistant = docAssistant;
         this.docWizardService = docWizardService;
+        this.feishuClient = feishuClient;
         this.auditService = auditService;
+    }
+
+    // ==================== 文档工作台（编辑器内生成/修改/导出） ====================
+
+    public record GenerateTextRequest(String docType, String title, String points,
+                                      String tone, String issuer) {}
+
+    public record ReviseTextRequest(String content, String instruction) {}
+
+    public record ExportRequest(String title, String content, String format) {}
+
+    /** 生成正文 markdown（工作台编辑器渲染用） */
+    @PostMapping("/generate-text")
+    public ApiResponse<java.util.Map<String, String>> generateText(@RequestBody GenerateTextRequest req) {
+        try {
+            String markdown = docAssistant.generateContent(
+                    req.docType(), req.title(), req.points(), req.tone(), req.issuer());
+            return ApiResponse.ok(java.util.Map.of("markdown", markdown));
+        } catch (Exception e) {
+            return ApiResponse.fail("生成失败: " + e.getMessage());
+        }
+    }
+
+    /** AI 修改正文（按指令增量改 + 修改摘要） */
+    @PostMapping("/revise-text")
+    public ApiResponse<java.util.Map<String, String>> reviseText(@RequestBody ReviseTextRequest req) {
+        try {
+            if (req.content() == null || req.content().isBlank()) {
+                return ApiResponse.fail("内容为空");
+            }
+            DocAssistantService.ProcessResult result =
+                    docAssistant.process(req.content(), "revise", req.instruction());
+            return ApiResponse.ok(java.util.Map.of(
+                    "markdown", result.text(), "summary", result.summary()));
+        } catch (Exception e) {
+            return ApiResponse.fail("修改失败: " + e.getMessage());
+        }
+    }
+
+    /** 导出：cloud=飞书云文档（返回链接文本，失败回退 docx 文件）；docx/pdf/md/txt=文件流 */
+    @PostMapping("/export")
+    public org.springframework.http.ResponseEntity<byte[]> export(@RequestBody ExportRequest req) {
+        try {
+            String format = req.format() == null ? "docx" : req.format().toLowerCase();
+            String footer = "---\n\n本文引用资料以知识库原文为准，由 AI 辅助生成，请人工核对后发布。";
+            if ("cloud".equals(format)) {
+                try {
+                    String docId = feishuClient.createCloudDoc(req.title());
+                    java.util.List<String> blockIds = docId != null
+                            ? feishuClient.writeCloudDocBlocks(docId,
+                                    docWizardService.toBlocksForExport(req.content() + "\n\n" + footer, req.title()))
+                            : null;
+                    if (docId != null && blockIds != null && !blockIds.isEmpty()) {
+                        feishuClient.makeCloudDocOrgReadable(docId);
+                        String url = feishuClient.cloudDocUrl(docId);
+                        return org.springframework.http.ResponseEntity.ok()
+                                .header("Content-Type", "text/plain; charset=UTF-8")
+                                .body(url.getBytes(StandardCharsets.UTF_8));
+                    }
+                } catch (Exception e) {
+                    log.warn("[文档工作台] 云文档导出失败，回退文件: {}", e.getMessage());
+                }
+                format = "docx";   // 云文档不可用 → 回退文件下载
+            }
+            byte[] bytes = docAssistant.toFile(format, req.title(), req.content(), footer);
+            String fileName = (req.title() == null || req.title().isBlank() ? "文档" : req.title())
+                    .replaceAll("[\\\\/:*?\"<>|\\s]+", "_") + "." + format;
+            return org.springframework.http.ResponseEntity.ok()
+                    .header("Content-Type", "application/octet-stream")
+                    .header("Content-Disposition", "attachment; filename*=UTF-8''"
+                            + java.net.URLEncoder.encode(fileName, StandardCharsets.UTF_8))
+                    .body(bytes);
+        } catch (Exception e) {
+            return org.springframework.http.ResponseEntity.status(500)
+                    .body(("导出失败: " + e.getMessage()).getBytes(StandardCharsets.UTF_8));
+        }
     }
 
     /** 对话生成的历史文件列表（按登录用户隔离；admin 看自己的——管理全量走数据目录） */

@@ -28,8 +28,12 @@ public class DocAssistantService {
             你是企业文档撰写助手。请按【%s】的标准结构撰写《%s》。
             语气要求：%s。
             内容要点：%s
-            只输出正文本身（不要"好的""以下是"等前缀或任何解释），
-            用 markdown 组织：## 分节标题 + 段落，落款单独一段。
+            写作要求：
+            1. 只输出正文本身（不要"好的""以下是"等前缀或任何解释）
+            2. 不使用 emoji 和装饰符号，纯文字排版
+            3. 用 markdown 组织：## 分节标题 + 段落；编号用 1. 2. 3.
+            4. 落款单独一段：%s 和今天日期（%s）
+            5. 今年是 %s 年：正文中涉及年份与星期必须与今年实际日历一致，不确定的星期几不要写
             """;
 
     /** 处理类：mode → 指令映射 */
@@ -56,13 +60,27 @@ public class DocAssistantService {
 
     /** 生成文档：LLM 出正文 → docx */
     public byte[] generateDocx(String docType, String title, String points, String tone) {
+        return buildDocx(title, generateContent(docType, title, points, tone));
+    }
+
+    /** 生成正文 markdown（工作台编辑器用）；issuer 为空时落款按"公司" */
+    public String generateContent(String docType, String title, String points, String tone,
+                                  String issuer) {
         String prompt = GENERATE_PROMPT.formatted(
                 docType == null || docType.isBlank() ? "通用文档" : docType,
                 title == null || title.isBlank() ? "未命名文档" : title,
                 tone == null || tone.isBlank() ? "正式、简洁、公文风格" : tone,
-                points == null || points.isBlank() ? "（无额外要点，按常规结构撰写）" : points);
+                points == null || points.isBlank() ? "（无额外要点，按常规结构撰写）" : points,
+                issuer == null || issuer.isBlank() ? "公司" : issuer,
+                java.time.LocalDate.now(),
+                java.time.LocalDate.now().getYear());
         String content = chatModel.chat(prompt);
-        return buildDocx(title, content == null ? "" : content);
+        return content == null ? "" : content;
+    }
+
+    /** 生成正文（兼容旧调用：落款默认"公司"） */
+    public String generateContent(String docType, String title, String points, String tone) {
+        return generateContent(docType, title, points, tone, null);
     }
 
     /** 处理文档：LLM 按模式处理 → (新文本, 摘要) */
