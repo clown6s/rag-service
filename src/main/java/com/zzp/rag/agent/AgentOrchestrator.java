@@ -55,6 +55,7 @@ public class AgentOrchestrator {
     private final com.zzp.rag.workflow.SopRegistry sopRegistry;
     private final com.zzp.rag.workflow.SopEngine sopEngine;
     private final com.zzp.rag.feishu.FeishuFileContextService fileContextService;
+    private final com.zzp.rag.oa.OaClient oa;
 
     /** 答案校验开关：生成后由小模型对照检索资料逐句核查，删除无依据内容（编造的最后防线） */
     @Value("${rag.agent.verify.enabled:true}")
@@ -76,7 +77,8 @@ public class AgentOrchestrator {
             EmployeeContext employeeContext,
             com.zzp.rag.workflow.SopRegistry sopRegistry,
             com.zzp.rag.workflow.SopEngine sopEngine,
-            com.zzp.rag.feishu.FeishuFileContextService fileContextService) {
+            com.zzp.rag.feishu.FeishuFileContextService fileContextService,
+            com.zzp.rag.oa.OaClient oa) {
         this.chatModel = chatModel;
         this.streamingChatModel = streamingChatModel;
         this.reasonerModel = reasonerModel;
@@ -93,6 +95,7 @@ public class AgentOrchestrator {
         this.sopRegistry = sopRegistry;
         this.sopEngine = sopEngine;
         this.fileContextService = fileContextService;
+        this.oa = oa;
     }
 
     public record AgentAnswer(String answer, List<String> sources, String route,
@@ -140,6 +143,14 @@ public class AgentOrchestrator {
         AgentAnswer employeeAnswer = tryEmployeeLookup(query, "KNOWLEDGE_QA", runtime);
         if (employeeAnswer != null) {
             return employeeAnswer;
+        }
+        // OA 数据问答确定性守卫（报销/经营数据直调 OA API，不等模型工具循环）
+        OaDataResult oaData = tryOaDataLookup(query, "KNOWLEDGE_QA", runtime);
+        if (oaData != null) {
+            if (oaData.chart() != null) {
+                com.zzp.rag.mcp.McpChartSink.put(oaData.chart());   // 飞书桥渲染图表卡片
+            }
+            return oaData.answer();
         }
         // L2 SOP 优先：确定性流程命中直接执行（该严格的地方严格；失败回退 L3 常规路径）
         com.zzp.rag.workflow.SopDefinition sop = sopRegistry.match(query);
@@ -583,6 +594,18 @@ public class AgentOrchestrator {
                     false, employeeAnswer.employeeId());
             return;
         }
+        // OA 数据问答确定性守卫（同非流式）：图表走 SSE chart 事件给 Web 端
+        OaDataResult oaData = tryOaDataLookup(query, "KNOWLEDGE_QA", runtime);
+        if (oaData != null) {
+            handler.onRoute(oaData.answer().route());
+            emitChunks(StreamTokenFixer.fixFull(oaData.answer().answer()), handler);
+            if (oaData.chart() != null) {
+                handler.onChart(oaData.chart());
+            }
+            handler.onComplete(oaData.answer().route(), oaData.answer().sources(), false, 0,
+                    true, oaData.answer().employeeId());
+            return;
+        }
         // L2 SOP 优先（同非流式）：同步执行后分块回放，保持流式观感
         com.zzp.rag.workflow.SopDefinition sop = sopRegistry.match(query);
         if (sop != null) {
@@ -793,6 +816,146 @@ public class AgentOrchestrator {
             log.warn("[Agent] 员工目录直查异常，回退常规路径: {}", e.getMessage());
             return null;
         }
+    }
+
+    // ==================== OA 数据问答确定性守卫 ====================
+
+    /** 报销问法（数据类；"报销流程/标准"由 DATA_PROCESS_WORDS 排除后走知识库） */
+    private static final java.util.regex.Pattern EXPENSE_WORDS =
+            java.util.regex.Pattern.compile("报销|花了多少钱|费用明细|开支");
+
+    /** 经营数据问法 */
+    private static final java.util.regex.Pattern METRICS_WORDS =
+            java.util.regex.Pattern.compile("经营数据|营收|成本|利润|业绩|销售额|经营情况|生意");
+
+    /** 流程/制度/规范问法 → 数据守卫放行，让知识库回答（"报销流程是什么"不是数据请求） */
+    private static final java.util.regex.Pattern DATA_PROCESS_WORDS =
+            java.util.regex.Pattern.compile("流程|制度|规定|标准|政策|怎么|如何|条件|材料|发票|格式|模板|须知|方法|注意事项");
+
+    /** 天数提取："最近7天"/"近30天"/"7天"，无则默认 7 */
+    private static final java.util.regex.Pattern DATA_DAYS =
+            java.util.regex.Pattern.compile("(\\d{1,3})\\s*天");
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper OA_JSON =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /** 守卫结果：确定性答案 + 图表数据（渠道侧渲染）；图表为 null 表示无图表（纯文本数据回答） */
+    private record OaDataResult(AgentAnswer answer, java.util.Map<String, Object> chart) {}
+
+    /**
+     * OA 数据问答确定性守卫：模型偶发不调用数据工具（实况："李娜最近7天报销了多少"两次
+     * "暂无法回答"第三次才调 oa_employee_expenses），报销/经营数据问法在 SOP/路由之前
+     * 直调 OA API，答案由 API 返回确定性格式化——数据全来自接口，无 LLM 参与、无编造空间。
+     * 未启用 MCP 技能的员工不生效；OA 无数据/接口异常返回 null 回退常规路径。
+     */
+    private OaDataResult tryOaDataLookup(String query, String route,
+                                         EmployeeContext.EmployeeRuntime runtime) {
+        try {
+            Long employeeId = runtime != null ? runtime.employeeId() : -1;
+            if (!skillRegistryToolProvider.mcpSkillsEnabled(employeeId)) {
+                return null;
+            }
+            // 流程/制度问法走知识库（报销流程、利润怎么算……）
+            if (DATA_PROCESS_WORDS.matcher(query).find()) {
+                return null;
+            }
+            java.util.regex.Matcher dm = DATA_DAYS.matcher(query);
+            int days = Math.min(90, Math.max(1, dm.find() ? Integer.parseInt(dm.group(1)) : 7));
+            if (EXPENSE_WORDS.matcher(query).find()) {
+                String name = null;
+                for (java.util.Map<String, String> emp : com.zzp.rag.mcp.demo.DemoMcpData.EMPLOYEES) {
+                    if (query.contains(emp.get("name"))) {
+                        name = emp.get("name");
+                        break;
+                    }
+                }
+                String qs = "/api/biz/expenses?days=" + days
+                        + (name == null ? "" : "&employee="
+                        + java.net.URLEncoder.encode(name, java.nio.charset.StandardCharsets.UTF_8));
+                String body = oa.call(qs, "GET", null);
+                com.fasterxml.jackson.databind.JsonNode data = OA_JSON.readTree(body).path("data");
+                if (!data.has("items") || data.path("items").isEmpty()) {
+                    return null;   // OA 无该数据 → 常规路径（知识库/兜底）
+                }
+                java.util.Map<String, Object> chart = com.zzp.rag.oa.OaChartData.expenses(body);
+                log.info("[Agent] OA 数据直查（报销 name={} days={}）确定性作答", name, days);
+                return new OaDataResult(new AgentAnswer(buildExpenseAnswer(data, name, days),
+                        List.of(), route, false, 0, true, employeeId), chart);
+            }
+            if (METRICS_WORDS.matcher(query).find()) {
+                String body = oa.call("/api/biz/metrics?days=" + days, "GET", null);
+                com.fasterxml.jackson.databind.JsonNode data = OA_JSON.readTree(body).path("data");
+                if (!data.has("dates") || data.path("dates").isEmpty()) {
+                    return null;
+                }
+                java.util.Map<String, Object> chart = com.zzp.rag.oa.OaChartData.metrics(body);
+                log.info("[Agent] OA 数据直查（经营数据 days={}）确定性作答", days);
+                return new OaDataResult(new AgentAnswer(buildMetricsAnswer(data, days),
+                        List.of(), route, false, 0, true, employeeId), chart);
+            }
+            return null;
+        } catch (Exception e) {
+            log.warn("[Agent] OA 数据直查异常，回退常规路径: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 报销答案确定性格式化：数据全部来自 OA /api/biz/expenses 返回（无 LLM 参与） */
+    private static String buildExpenseAnswer(com.fasterxml.jackson.databind.JsonNode data,
+                                             String name, int days) {
+        StringBuilder sb = new StringBuilder();
+        int count = data.path("count").asInt();
+        String total = com.zzp.rag.oa.OaChartData.fmt(data.path("total"));
+        if (name != null) {
+            sb.append(name).append("最近 ").append(days).append(" 天共报销 ")
+                    .append(total).append(" 元，共 ").append(count).append(" 笔，明细如下：\n");
+        } else {
+            sb.append("近 ").append(days).append(" 天全员共 ").append(count)
+                    .append(" 笔报销，合计 ").append(total).append(" 元，明细如下：\n");
+        }
+        String dept = null;
+        boolean sameDept = true;
+        for (com.fasterxml.jackson.databind.JsonNode it : data.path("items")) {
+            String d = it.path("d").asText();
+            String type = it.path("expenseType").asText();
+            String remark = it.path("remark").asText("");
+            String emp = it.path("empName").asText("");
+            String dn = it.path("deptName").asText("");
+            if (dept == null) {
+                dept = dn;
+            } else if (!dept.equals(dn)) {
+                sameDept = false;
+            }
+            // 行首不加粗日期：fixFull 会把 "- **…** …**"（加粗开头+加粗结尾）误判为
+            // 章节标题而剥掉列表符 → 整段列表缩进消失
+            sb.append("- ").append(d).append("：")
+                    .append(type)
+                    .append(remark.isBlank() ? "" : "（" + remark + "）")
+                    .append("，金额 **")
+                    .append(com.zzp.rag.oa.OaChartData.fmt(it.path("amount")))
+                    .append(" 元**");
+            if (name == null && !emp.isBlank()) {
+                sb.append("（").append(emp).append("）");
+            }
+            sb.append("\n");
+        }
+        if (name != null && dept != null && !dept.isBlank() && sameDept) {
+            sb.append("全部报销均归属").append(dept).append("。");
+        }
+        return sb.toString().strip();
+    }
+
+    /** 经营数据答案确定性格式化：合计一行 + 图表卡片承载每日明细 */
+    private static String buildMetricsAnswer(com.fasterxml.jackson.databind.JsonNode data, int days) {
+        String start = data.path("dates").get(0).asText();
+        String end = data.path("dates").get(data.path("dates").size() - 1).asText();
+        com.fasterxml.jackson.databind.JsonNode sum = data.path("summary");
+        // "经营数据，"用逗号：fixFull 的短标签规则会把 "）经营数据：" 断成两行
+        return "近 " + days + " 天（" + start + " 至 " + end + "）经营数据，"
+                + "营收合计 " + com.zzp.rag.oa.OaChartData.fmt(sum.path("revenue")) + " 元，"
+                + "成本 " + com.zzp.rag.oa.OaChartData.fmt(sum.path("cost")) + " 元，"
+                + "利润 " + com.zzp.rag.oa.OaChartData.fmt(sum.path("profit")) + " 元。"
+                + "每日明细见下表。";
     }
 
     // ==================== 意图路由（R1） ====================

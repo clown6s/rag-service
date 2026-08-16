@@ -39,6 +39,11 @@ import java.util.Map;
 @Component
 public class SkillRegistryToolProvider implements ToolProvider {
 
+    /** 流程/制度/规范问法：数据工具从 LLM 视野移除（实况："报销流程是什么"模型调了
+     *  oa_employee_expenses 用报销数据作答而非流程制度；与 AgentOrchestrator#DATA_PROCESS_WORDS 同源） */
+    private static final java.util.regex.Pattern DATA_PROCESS_WORDS =
+            java.util.regex.Pattern.compile("流程|制度|规定|标准|政策|怎么|如何|条件|材料|发票|格式|模板|须知|方法|注意事项");
+
     private final SkillService skillService;
     private final SkillSnapshotCache snapshotCache;
     private final BuiltinSkillFallback builtinFallback;
@@ -74,6 +79,10 @@ public class SkillRegistryToolProvider implements ToolProvider {
     @Override
     public ToolProviderResult provideTools(ToolProviderRequest request) {
         Object memoryId = request.chatMemoryId();
+        // 本轮问题文本：流程/制度问法下剔除数据类 MCP 工具
+        // （实况："报销流程是什么"模型调了 oa_employee_expenses 答了报销数据）
+        String query = request.userMessage() != null ? request.userMessage().singleText() : "";
+        boolean processQuestion = !query.isBlank() && DATA_PROCESS_WORDS.matcher(query).find();
         // 内置技能（知识库检索/图谱查询）是平台底座，永远装配——不依赖 MySQL 与授权，
         // 与阶段 2 的 .tools(agentTools) 行为等价（软依赖：MySQL 挂掉问答能力不缩水）。
         // 阶段 4：员工有 knowledgeScope 时——
@@ -102,7 +111,9 @@ public class SkillRegistryToolProvider implements ToolProvider {
             return new ToolProviderResult(tools);
         }
         for (SkillSnapshotCache.AuthorizedSkill skill : snapshot.skills()) {
-            if (skill.status() == 1 && "mcp".equals(skill.toolType())) {
+            // 流程/制度问法只答知识库：MCP 数据工具不进 LLM 视野
+            // （实况：模型搜库无果后调 oa_dept_tree/oa_employee_list 空转打满工具轮次报错）
+            if (skill.status() == 1 && "mcp".equals(skill.toolType()) && !processQuestion) {
                 assembleMcpTools(skill, tools);
             }
         }
