@@ -154,3 +154,17 @@ CREATE TABLE IF NOT EXISTS answer_review (
   reviewed_at DATETIME NULL,
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='答案审核流';
+
+
+-- 飞书通讯录同步（统一身份：open_id → 姓名/职位/角色）
+CREATE TABLE IF NOT EXISTS feishu_employee (
+  open_id     VARCHAR(64) PRIMARY KEY,
+  name        VARCHAR(64) NOT NULL,
+  job_title   VARCHAR(64) NULL,
+  dept_ids    VARCHAR(256) NULL,
+  role        VARCHAR(16) NOT NULL DEFAULT '员工',
+  role_manual TINYINT NOT NULL DEFAULT 0 COMMENT '1=人工指定角色（同步不覆盖）',
+  synced_at   DATETIME NULL,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_role (role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='飞书通讯录员工（统一身份与角色）';

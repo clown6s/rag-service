@@ -776,6 +776,67 @@ public class FeishuClient {
                 : config.baseUrl() + "/base/" + appToken;
     }
 
+    // ==================== 通讯录（统一身份：open_id → 员工/角色） ====================
+
+    /** 通讯录用户（同步用） */
+    public record ContactUser(String openId, String name, String jobTitle, String deptIds) {}
+
+    /**
+     * 拉取通讯录用户全量列表（分页）→ 基本信息。
+     * 权限：contact:contact.base:readonly（未开通返回 null 列表）
+     */
+    public java.util.List<ContactUser> listContactUsers() {
+        java.util.List<ContactUser> users = new java.util.ArrayList<>();
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return users;
+            }
+            String pageToken = null;
+            do {
+                String url = config.baseUrl() + "/open-apis/contact/v3/users"
+                        + "?user_id_type=open_id&page_size=50"
+                        + (pageToken != null ? "&page_token=" + pageToken : "");
+                HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofSeconds(20))
+                        .header("Authorization", "Bearer " + token)
+                        .GET()
+                        .build();
+                HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+                if (resp.statusCode() != 200) {
+                    log.warn("[飞书] 通讯录拉取失败 http={} body={}", resp.statusCode(),
+                            truncate(resp.body(), 200));
+                    break;
+                }
+                JsonNode node = objectMapper.readTree(resp.body());
+                if (node.path("code").asInt() != 0) {
+                    log.warn("[飞书] 通讯录拉取失败: {}", truncate(resp.body(), 200));
+                    break;
+                }
+                JsonNode data = node.path("data");
+                for (JsonNode u : data.path("items")) {
+                    StringBuilder deptIds = new StringBuilder();
+                    u.path("department_ids").forEach(d -> {
+                        if (deptIds.length() > 0) {
+                            deptIds.append(',');
+                        }
+                        deptIds.append(d.asText());
+                    });
+                    users.add(new ContactUser(
+                            u.path("open_id").asText(""),
+                            u.path("name").asText(""),
+                            u.path("job_title").asText(""),
+                            deptIds.toString()));
+                }
+                pageToken = data.path("has_more").asBoolean(false)
+                        ? data.path("page_token").asText(null) : null;
+            } while (pageToken != null);
+        } catch (Exception e) {
+            log.warn("[飞书] 通讯录拉取异常: {}", e.getMessage());
+        }
+        return users;
+    }
+
     // ==================== 文件消息（文档生成定稿推送 + 转发文件下载） ====================
 
     /** 下载资源（用户转发给机器人的文件/图片）→ 字节 + 推测文件名 */

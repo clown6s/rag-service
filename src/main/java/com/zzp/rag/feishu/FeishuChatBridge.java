@@ -58,6 +58,15 @@ public class FeishuChatBridge {
             new java.util.concurrent.ConcurrentHashMap<>();
     private final com.zzp.rag.feishu.BitableSinkService bitableSinkService;
     private final com.zzp.rag.ocr.ZhipuOcrClient zhipuOcrClient;
+    private final com.zzp.rag.feishu.ContactSyncService contactSyncService;
+
+    /** 角色 → 数字员工（0=默认助手）；按人控权：不同角色绑定不同知识范围的助手 */
+    @org.springframework.beans.factory.annotation.Value("${rag.feishu.agent-employee:0}")
+    private long agentEmployee;
+    @org.springframework.beans.factory.annotation.Value("${rag.feishu.agent-director:0}")
+    private long agentDirector;
+    @org.springframework.beans.factory.annotation.Value("${rag.feishu.agent-general:0}")
+    private long agentGeneral;
 
     public FeishuChatBridge(FeishuConfig config, FeishuClient client,
                             AgentOrchestrator orchestrator,
@@ -67,6 +76,7 @@ public class FeishuChatBridge {
                             com.zzp.rag.ingestion.IngestionPipeline ingestionPipeline,
                             BitableSinkService bitableSinkService,
                             com.zzp.rag.ocr.ZhipuOcrClient zhipuOcrClient,
+                            ContactSyncService contactSyncService,
                             AuditService auditService,
                             ObjectMapper objectMapper) {
         this.config = config;
@@ -78,8 +88,22 @@ public class FeishuChatBridge {
         this.ingestionPipeline = ingestionPipeline;
         this.bitableSinkService = bitableSinkService;
         this.zhipuOcrClient = zhipuOcrClient;
+        this.contactSyncService = contactSyncService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+    }
+
+    /** 角色 → 数字员工（按人控权：不同角色绑定不同知识范围的助手） */
+    private Long roleAgentId(String role) {
+        long id = switch (role == null ? "员工" : role) {
+            case "总经理" -> agentGeneral;
+            case "总监" -> agentDirector;
+            default -> agentEmployee;
+        };
+        if (id > 0) {
+            return id;
+        }
+        return config.defaultAgentId() > 0 ? config.defaultAgentId() : null;
     }
 
     /** HTTP 回调模式入口：schema 2.0 事件体 → 拆包 → 处理核心（sender open_id 作审计身份） */
@@ -245,7 +269,8 @@ public class FeishuChatBridge {
             }
             // 云文档编辑者授权：定稿时把发起用户加成文档编辑者（tenant_readable 仅可读）
             docWizardService.setEditorHint(auditUser);
-            Long agentId = config.defaultAgentId() > 0 ? config.defaultAgentId() : null;
+            // 按人控权：open_id → 通讯录角色 → 数字员工（不同角色不同知识范围）
+            Long agentId = roleAgentId(contactSyncService.resolveRole(auditUser));
             AgentOrchestrator.AgentAnswer answer;
             try {
                 answer = orchestrator.answer(chatId, query, agentId);
