@@ -223,6 +223,7 @@ public class FeishuClient {
      * 写入云文档内容（blocks 批量追加到根块）。
      * blocks 元素：{"block_type":2,"text":{"elements":[{"text_run":{"content":"..."}}]}}
      * 类型：2=文本 3=一级标题 4=二级标题 12=有序列表 13=无序列表
+     * children 单次上限 50：超限分批（倒序插 index=0 保持原文顺序）
      */
     public java.util.List<String> writeCloudDocBlocks(String documentId,
                                                       java.util.List<java.util.Map<String, Object>> blocks) {
@@ -231,26 +232,35 @@ public class FeishuClient {
             if (token == null) {
                 return null;
             }
-            String body = objectMapper.writeValueAsString(java.util.Map.of(
-                    "children", blocks,
-                    "index", 0));
-            HttpRequest req = HttpRequest.newBuilder(URI.create(
-                            config.baseUrl() + "/open-apis/docx/v1/documents/"
-                                    + documentId + "/blocks/" + documentId + "/children"))
-                    .timeout(Duration.ofSeconds(20))
-                    .header("Content-Type", "application/json; charset=utf-8")
-                    .header("Authorization", "Bearer " + token)
-                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                    .build();
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            JsonNode node = objectMapper.readTree(resp.body());
-            if (resp.statusCode() != 200 || node.path("code").asInt() != 0) {
-                log.warn("[飞书] 云文档写入失败: {}", truncate(resp.body(), 200));
-                return null;
-            }
+            final int BATCH = 50;
             java.util.List<String> ids = new java.util.ArrayList<>();
-            node.path("data").path("children").forEach(ch ->
-                    ids.add(ch.path("block_id").asText("")));
+            for (int end = blocks.size(); end > 0; end -= BATCH) {
+                int start = Math.max(0, end - BATCH);
+                java.util.List<java.util.Map<String, Object>> batch = blocks.subList(start, end);
+                String body = objectMapper.writeValueAsString(java.util.Map.of(
+                        "children", batch,
+                        "index", 0));
+                HttpRequest req = HttpRequest.newBuilder(URI.create(
+                                config.baseUrl() + "/open-apis/docx/v1/documents/"
+                                        + documentId + "/blocks/" + documentId + "/children"))
+                        .timeout(Duration.ofSeconds(30))
+                        .header("Content-Type", "application/json; charset=utf-8")
+                        .header("Authorization", "Bearer " + token)
+                        .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                        .build();
+                HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+                JsonNode node = objectMapper.readTree(resp.body());
+                if (resp.statusCode() != 200 || node.path("code").asInt() != 0) {
+                    log.warn("[飞书] 云文档写入失败: {}", truncate(resp.body(), 200));
+                    return null;
+                }
+                // 批次按文档倒序插入 index=0：后插批次位于文档前部 → 其 id 前插进总列表，
+                // 最终 ids 顺序 = 文档位置顺序（对齐 signoffIndexes 的下标语义）
+                java.util.List<String> batchIds = new java.util.ArrayList<>();
+                node.path("data").path("children").forEach(ch ->
+                        batchIds.add(ch.path("block_id").asText("")));
+                ids.addAll(0, batchIds);
+            }
             return ids;
         } catch (Exception e) {
             log.warn("[飞书] 云文档写入异常: {}", e.getMessage());
