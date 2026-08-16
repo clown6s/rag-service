@@ -464,22 +464,68 @@ public class FeishuChatBridge {
             elements.add(java.util.Map.of("tag", "chart",
                     "chart_spec", spec));   // 字段名必须 snake_case：chart_spec（camelCase 会被飞书拒 400）
 
-            // 数据表格（markdown 兜底）
+            // 数据表格：原生 table 组件（卡片 markdown 不支持 GFM 表格，管道符会原样显示）
             Object tableObj = chart.get("table");
             if (tableObj instanceof java.util.List<?> table && !table.isEmpty()) {
-                StringBuilder sb = new StringBuilder("**").append(chart.getOrDefault("title", "数据")).append("**\n\n");
-                for (Object rowObj : table) {
-                    if (rowObj instanceof java.util.List<?> row) {
-                        sb.append(String.join(" | ", row.stream()
-                                        .map(c -> String.valueOf(c).replace("|", "｜")).toList()))
-                                .append('\n');
+                java.util.List<String> header = new java.util.ArrayList<>();
+                if (table.get(0) instanceof java.util.List<?> hr) {
+                    hr.forEach(h -> header.add(String.valueOf(h)));
+                }
+                // 数值列检测（表头行外全部可解析为数字 → number 类型，右对齐 + 千分位）
+                java.util.List<Boolean> numeric = new java.util.ArrayList<>();
+                for (int c = 0; c < header.size(); c++) {
+                    boolean allNum = true;
+                    for (int r = 1; r < table.size() && allNum; r++) {
+                        Object rowObj = table.get(r);
+                        if (rowObj instanceof java.util.List<?> row && c < row.size()) {
+                            try {
+                                Double.parseDouble(String.valueOf(row.get(c)));
+                            } catch (Exception e) {
+                                allNum = false;
+                            }
+                        }
+                    }
+                    numeric.add(allNum);
+                }
+                java.util.List<Object> columns = new java.util.ArrayList<>();
+                for (int c = 0; c < header.size(); c++) {
+                    java.util.Map<String, Object> col = new java.util.LinkedHashMap<>();
+                    col.put("name", "c" + c);
+                    col.put("display_name", header.get(c));
+                    if (numeric.get(c)) {
+                        col.put("data_type", "number");   // number 默认右对齐；format 字段是结构体，不配
+                    } else {
+                        col.put("data_type", "text");
+                    }
+                    columns.add(col);
+                }
+                java.util.List<Object> rows = new java.util.ArrayList<>();
+                for (int r = 1; r < table.size(); r++) {
+                    if (table.get(r) instanceof java.util.List<?> row) {
+                        java.util.Map<String, Object> rowMap = new java.util.LinkedHashMap<>();
+                        for (int c = 0; c < header.size() && c < row.size(); c++) {
+                            String cell = String.valueOf(row.get(c));
+                            Object val = cell;
+                            if (numeric.get(c)) {
+                                try {
+                                    val = Double.parseDouble(cell);
+                                } catch (Exception ignored) {
+                                }
+                            }
+                            rowMap.put("c" + c, val);
+                        }
+                        rows.add(rowMap);
                     }
                 }
+                elements.add(java.util.Map.of("tag", "table",
+                        "page_size", 10,
+                        "columns", columns,
+                        "rows", rows));
                 Object summary = chart.get("summary");
                 if (summary != null && !String.valueOf(summary).isBlank()) {
-                    sb.append("\n**").append(summary).append("**");
+                    elements.add(java.util.Map.of("tag", "markdown",
+                            "content", "**" + summary + "**"));
                 }
-                elements.add(java.util.Map.of("tag", "markdown", "content", sb.toString()));
             }
 
             elements.add(java.util.Map.of("tag", "hr"));

@@ -157,8 +157,9 @@ public class AgentOrchestrator {
             return new AgentAnswer(chatDirect(query, runtime, fileBlock), List.of(), route,
                     false, 0, false, runtime != null ? runtime.employeeId() : 0);
         }
-        if ("CLARIFY".equals(route) && CLARIFY_GUARD.matcher(query).find() && fileBlock.isEmpty()) {
-            // 有会话文件上下文时不走澄清：短问题大概率指向文件内容，直接以文件作答
+        if ("CLARIFY".equals(route) && CLARIFY_GUARD.matcher(query).find() && fileBlock.isEmpty()
+                && !DATA_QUERY_GUARD.matcher(query).find()) {
+            // 有会话文件上下文或数据类短问题时不走澄清：直接走文件/工具作答
             return new AgentAnswer(clarify(query), List.of(), route, false, 0, false,
                     runtime != null ? runtime.employeeId() : 0);
         }
@@ -791,6 +792,10 @@ public class AgentOrchestrator {
 
             用户输入：
             """;
+
+    /** 数据类问题守卫：短句数据请求（经营/报销/营收…）不走 CLARIFY，直接放行工具循环 */
+    private static final java.util.regex.Pattern DATA_QUERY_GUARD =
+            java.util.regex.Pattern.compile("经营数据|营收|成本|利润|报销|业绩|销售额|费用|花了多少钱|放假|假期");
 
     /** 追问澄清确定性门卫：防小模型过度触发——仅短问句或含指代词/笼统词时允许 CLARIFY */
     private static final java.util.regex.Pattern CLARIFY_GUARD =
