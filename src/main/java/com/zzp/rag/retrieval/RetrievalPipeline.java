@@ -105,9 +105,11 @@ public class RetrievalPipeline {
 
         StringBuilder sb = new StringBuilder();
 
-        // 知识图谱上下文（实体关系）
+        // 知识图谱上下文（实体关系）：标注仅供背景参考，防模型逐条复述图谱行
+        // （历史坑：三元组格式曾被逐条粘贴进回答；自然语言化后仍有逐条回声）
         if (!result.graphContext().isBlank()) {
-            sb.append("## 知识图谱关联\n").append(result.graphContext()).append("\n\n");
+            sb.append("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n")
+                    .append(result.graphContext()).append("\n\n");
         }
 
         int totalLen = sb.length();

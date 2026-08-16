@@ -333,19 +333,19 @@ public class AgentOrchestrator {
             usageTracker.record("qwen-plus", "verify", context.length(), out == null ? 0 : out.length(),
                     System.currentTimeMillis() - start);
             if (out == null || out.isBlank()) {
-                return answer;
+                return stripUnsourcedAssertions(answer, context);
             }
             String cleaned = out.strip();
             if (cleaned.startsWith("```")) {
                 cleaned = cleaned.replaceFirst("^```\\w*\\s*", "").replaceFirst("\\s*```$", "");
             }
             if (cleaned.isBlank()) {
-                return answer;
+                return stripUnsourcedAssertions(answer, context);
             }
             if (!cleaned.equals(answer)) {
                 log.info("[Agent] 答案校验已修订: {} 字 → {} 字", answer.length(), cleaned.length());
             }
-            return stripMissingTermSentences(cleaned, missing);
+            return stripUnsourcedAssertions(stripMissingTermSentences(cleaned, missing), context);
         } catch (Exception e) {
             log.warn("[Agent] 答案校验失败，按原文下发: {}", e.getMessage());
             return answer;
@@ -387,6 +387,49 @@ public class AgentOrchestrator {
         }
         log.info("[Agent] 确定性删除含缺失术语句子 {} 句（术语: {}）",
                 removed, String.join("、", missingTerms.stream().limit(8).toList()));
+        String result = kept.toString().isBlank() ? NO_ANSWER : kept.toString();
+        return collapseEmptyHeadings(result);
+    }
+
+    /** 鉴伪断言句式（"并非××所言"/"伪名言"/"杜撰"…）——模型自带知识，不属于资料结论 */
+    private static final java.util.regex.Pattern ASSERTION_FAB =
+            java.util.regex.Pattern.compile(
+                    "(并非|不是|并非真的|不代表).{0,10}(所言|所说|讲的|写的|说的|名言|原话|语录)"
+                            + "|伪名言|假名言|系杜撰|是杜撰|编造的|伪造的|以讹传讹|张冠李戴");
+
+    /**
+     * 鉴伪断言确定性删除：句内含"并非××所言/伪名言/杜撰"类断言且资料中找不到同一断言的句子
+     * 直接移除（实况："这段话并非宫崎骏所言，而是网络流传的伪名言"——资料只给了原文署名，
+     * 鉴伪结论是模型自带知识）。断言在资料中出现过则保留（确有出处的鉴伪是合法结论）。
+     * 全删空返回兜底句式。
+     */
+    private String stripUnsourcedAssertions(String text, String context) {
+        if (text == null || text.isBlank() || context == null || context.isBlank()) {
+            return text;
+        }
+        String normCtx = normalizeForCompare(context);
+        StringBuilder kept = new StringBuilder();
+        int removed = 0;
+        for (String sentence : text.split("(?<=[。！？；\\n])")) {
+            java.util.regex.Matcher m = ASSERTION_FAB.matcher(sentence);
+            boolean bad = false;
+            while (m.find()) {
+                String hit = normalizeForCompare(m.group());
+                if (!normCtx.contains(hit)) {
+                    bad = true;   // 资料里没有这个断言 → 无出处
+                    break;
+                }
+            }
+            if (bad) {
+                removed++;
+            } else {
+                kept.append(sentence);
+            }
+        }
+        if (removed == 0) {
+            return text;
+        }
+        log.info("[Agent] 确定性删除无出处鉴伪断言句 {} 句", removed);
         String result = kept.toString().isBlank() ? NO_ANSWER : kept.toString();
         return collapseEmptyHeadings(result);
     }
