@@ -104,6 +104,8 @@ public class AgentOrchestrator {
         void onRoute(String route);
         void onToken(String token);
         void onToolExecuted(String toolName, String arguments, boolean retrievalEmpty);
+        /** 图表数据（数据类 MCP 工具产生；onComplete 之前触发；默认空实现兼容旧控制器） */
+        default void onChart(java.util.Map<String, Object> chart) {}
         void onComplete(String route, List<String> sources, boolean rerankDegraded,
                         int graphContextChars, boolean mcpToolsUsed, long employeeId);
         void onError(Throwable error);
@@ -660,6 +662,9 @@ public class AgentOrchestrator {
         final boolean[] degradedHolder = {pre.rerankDegraded()};
         final boolean[] mcpUsedHolder = {false};
         final StringBuffer mcpResultsHolder = new StringBuffer();
+        // 图表数据：工具执行线程消费 ThreadLocal → 快照到 holder（onCompleteResponse 异线程）
+        final java.util.Map<String, Object>[] chartHolder =
+                new java.util.Map[]{null};
         // 答案校验：服务端先收齐全文 → 对照检索资料核查 → 再下发
         // （token 不再直通前端，换取"无依据内容不出门"的保证；工具事件仍实时透传；
         //   本轮用过 MCP 工具则按"上下文+工具结果"校验——MCP 数据可核，夹带编造仍删）
@@ -672,6 +677,12 @@ public class AgentOrchestrator {
                         degradedHolder[0] = agentTools.isRerankDegraded();
                         mcpUsedHolder[0] |= com.zzp.rag.mcp.McpCallTracker.consumeCalled();
                         mcpResultsHolder.append(com.zzp.rag.mcp.McpCallTracker.consumeResults());
+                        // 工具执行线程上的图表快照（ThreadLocal 在此线程有效）
+                        java.util.Map<String, Object> chart =
+                                com.zzp.rag.mcp.McpCallTracker.consumeChartData();
+                        if (chart != null) {
+                            chartHolder[0] = chart;
+                        }
                         handler.onToolExecuted(req.request().name(), req.request().arguments(), false);
                     })
                     .onCompleteResponse(resp -> {
@@ -684,6 +695,9 @@ public class AgentOrchestrator {
                                     : verify(full.toString(), context, graphOnly);
                             // fixFull 与固定流水线/非流式端点保持一致（### 子标题 → 加粗、- 列表 → 有序）
                             emitChunks(StreamTokenFixer.fixFull(finalAnswer), handler);
+                            if (chartHolder[0] != null) {
+                                handler.onChart(chartHolder[0]);
+                            }
                             handler.onComplete(route, sourcesHolder[0], degradedHolder[0],
                                     pre.graphContext().length(), mcpUsedHolder[0],
                                     runtime != null ? runtime.employeeId() : 0);

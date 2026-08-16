@@ -153,6 +153,11 @@ public class AgentChatController {
                     }
 
                     @Override
+                    public void onChart(java.util.Map<String, Object> chart) {
+                        sendSafe(emitter, closed, "chart", chart);
+                    }
+
+                    @Override
                     public void onComplete(String route, List<String> sources, boolean degraded,
                                            int graphContextChars, boolean mcpToolsUsed, long employeeId) {
                         if (closed.get()) {
