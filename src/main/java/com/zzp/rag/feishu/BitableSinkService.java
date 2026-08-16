@@ -46,6 +46,12 @@ public class BitableSinkService {
                             return null;
                         }
                         sharedAppToken = appToken;
+                        // 应用创建自带空「数据表」：删掉，打开链接直接落在数据表上
+                        for (FeishuClient.BitableTable t : client.listBitableTables(appToken)) {
+                            if ("数据表".equals(t.name())) {
+                                client.deleteBitableTable(appToken, t.tableId());
+                            }
+                        }
                     }
                 }
             }

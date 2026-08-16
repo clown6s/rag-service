@@ -486,6 +486,9 @@ public class FeishuClient {
     /** 多维表格句柄（复用：同 kind 不重复建应用） */
     public record BitableHandle(String appToken, String tableId) {}
 
+    /** 表信息（列表用） */
+    public record BitableTable(String name, String tableId) {}
+
     /** 创建多维表格应用 → app_token（失败返回 null，多为未开通 bitable:app 权限） */
     public String createBitableApp(String name) {
         try {
@@ -545,6 +548,64 @@ public class FeishuClient {
         } catch (Exception e) {
             log.warn("[飞书] 多维表格建表异常: {}", e.getMessage());
             return null;
+        }
+    }
+
+    /** 列出应用内所有表（name → tableId） */
+    public java.util.List<BitableTable> listBitableTables(String appToken) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return java.util.List.of();
+            }
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/bitable/v1/apps/"
+                                    + appToken + "/tables?page_size=100"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Authorization", "Bearer " + token)
+                    .GET()
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            JsonNode node = objectMapper.readTree(resp.body());
+            java.util.List<BitableTable> tables = new java.util.ArrayList<>();
+            node.path("data").path("items").forEach(t -> {
+                String name = t.path("name").asText("");
+                String id = t.path("table_id").asText("");
+                if (!id.isBlank()) {
+                    tables.add(new BitableTable(name, id));
+                }
+            });
+            return tables;
+        } catch (Exception e) {
+            log.warn("[飞书] 多维表格列表异常: {}", e.getMessage());
+            return java.util.List.of();
+        }
+    }
+
+    /** 删除表（应用创建自带空「数据表」，删掉让打开链接直接落在数据表） */
+    public boolean deleteBitableTable(String appToken, String tableId) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return false;
+            }
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/bitable/v1/apps/"
+                                    + appToken + "/tables/" + tableId))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Authorization", "Bearer " + token)
+                    .DELETE()
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            boolean ok = resp.statusCode() == 200
+                    && objectMapper.readTree(resp.body()).path("code").asInt() == 0;
+            if (!ok) {
+                log.warn("[飞书] 多维表格删除失败: {}", truncate(resp.body(), 150));
+            }
+            return ok;
+        } catch (Exception e) {
+            log.warn("[飞书] 多维表格删除异常: {}", e.getMessage());
+            return false;
         }
     }
 
