@@ -717,7 +717,9 @@ public class AgentOrchestrator {
                                             graphOnly)
                                     : verify(full.toString(), context, graphOnly);
                             // fixFull 与固定流水线/非流式端点保持一致（### 子标题 → 加粗、- 列表 → 有序）
-                            emitChunks(StreamTokenFixer.fixFull(finalAnswer), handler);
+                            // 剥空兜底：图谱三元组被规则剥光/校验删空的答案不能发空内容
+                            emitChunks(finalAnswer.isBlank() ? NO_ANSWER
+                                    : StreamTokenFixer.fixFull(finalAnswer), handler);
                             if (chartHolder[0] != null) {
                                 handler.onChart(chartHolder[0]);
                             }

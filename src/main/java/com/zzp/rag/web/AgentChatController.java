@@ -88,6 +88,10 @@ public class AgentChatController {
             com.zzp.rag.mcp.McpChartSink.getAndClear();
             // 整段格式修复（与固定流水线端点一致的兜底）
             String answer = StreamTokenFixer.fixFull(result.answer());
+            // 剥空兜底：图谱三元组被规则剥光/校验删空的答案不能发空内容
+            if (answer.isBlank()) {
+                answer = AgentOrchestrator.NO_ANSWER;
+            }
             // 法名引用校验：库外引用追加标注（防引用幻觉）；
             // MCP 工具轮跳过——业务制度名（如《员工年休假管理办法》）不是法条引用
             if (!result.mcpToolsUsed() && !"DOC_WIZARD".equals(result.route())) {

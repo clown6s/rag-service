@@ -287,6 +287,10 @@ public class FeishuChatBridge {
                 }
             }
             String markdown = StreamTokenFixer.fixFull(answer.answer());
+            // 剥空兜底：图谱三元组被规则剥光/校验删空的答案不能发空卡片
+            if (markdown.isBlank()) {
+                markdown = AgentOrchestrator.NO_ANSWER;
+            }
             // 定稿文件推送（上传素材 + 发文件消息）
             com.zzp.rag.agent.DocWizardService.Pending pending =
                     docWizardService.takePending(wizardKey);
@@ -809,6 +813,10 @@ public class FeishuChatBridge {
                 AgentOrchestrator.AgentAnswer answer = orchestrator.answer(chatId, query, agentId);
                 com.zzp.rag.mcp.McpChartSink.getAndClear();
                 String markdown = StreamTokenFixer.fixFull(answer.answer());
+            // 剥空兜底：图谱三元组被规则剥光/校验删空的答案不能发空卡片
+            if (markdown.isBlank()) {
+                markdown = AgentOrchestrator.NO_ANSWER;
+            }
                 String card = buildCard(query, markdown, answer.sources(), openChatId);
                 if (card == null || !client.updateCard(openMessageId, card)) {
                     client.replyMessage(openMessageId, toFeishuText(markdown));   // 更新失败回退纯文本

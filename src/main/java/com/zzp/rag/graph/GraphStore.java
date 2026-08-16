@@ -205,15 +205,33 @@ public class GraphStore {
 
         public boolean isEmpty() { return paths.isEmpty(); }
 
-        /** 格式化为 LLM 可读的文本（上限 20 条防巨量三元组灌入上下文） */
+        /**
+         * 格式化为 LLM 可读文本（上限 20 条防巨量灌入上下文）。
+         * 按来源实体分组自然语言化：历史坑——三元组格式（"高血压 --[属于]--> 恶性高血压"）
+         * 会被模型原样模仿粘贴进回答，fixFull 剥空后发出空卡片；
+         * 自然语言化后模型正常转述，也不再有可模仿的三元组语形。
+         */
         public String format() {
             if (paths.isEmpty()) return "";
-            var seen = new LinkedHashSet<String>();
+            java.util.Map<String, java.util.LinkedHashMap<String, java.util.LinkedHashSet<String>>> bySource =
+                    new java.util.LinkedHashMap<>();
             for (var path : paths) {
-                String arrow = String.join(" → ", path.relTypes());
-                seen.add("- %s --[%s]--> %s".formatted(path.source(), arrow, path.target()));
+                String rel = String.join(" → ", path.relTypes());
+                bySource.computeIfAbsent(path.source(), k -> new java.util.LinkedHashMap<>())
+                        .computeIfAbsent(rel, k -> new java.util.LinkedHashSet<>())
+                        .add(path.target());
             }
-            return seen.stream().limit(20).collect(Collectors.joining("\n"));
+            java.util.List<String> lines = new java.util.ArrayList<>();
+            for (var e : bySource.entrySet()) {
+                for (var r : e.getValue().entrySet()) {
+                    lines.add("- %s（%s）：%s".formatted(
+                            e.getKey(), r.getKey(), String.join("、", r.getValue())));
+                    if (lines.size() >= 20) {
+                        return String.join("\n", lines);
+                    }
+                }
+            }
+            return String.join("\n", lines);
         }
     }
 }
