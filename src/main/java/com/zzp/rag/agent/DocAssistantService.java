@@ -57,9 +57,51 @@ public class DocAssistantService {
                     + "篇幅缩减 30%%-50%%，直接输出压缩后的完整正文。");
 
     private final ChatModel chatModel;
+    private final ChatModel verifyModel;
 
-    public DocAssistantService(@Qualifier("chatModel") ChatModel chatModel) {
+    /** 文档生成事实校验：生成后对照要点核查，删无依据的具体事实（编造最后防线） */
+    @org.springframework.beans.factory.annotation.Value("${rag.doc.verify.enabled:true}")
+    private boolean docVerifyEnabled;
+
+    /** 生成后核查提示词：只许删改无依据事实，结构/落款保持不变 */
+    private static final String DOC_VERIFY_PROMPT = """
+            你是文档事实核查员。对照【用户要点】逐句核查下面的文档正文：
+            1. 删除正文中凭空出现的具体事实：统计数字、百分比、日期年份、法规名称与条文、
+               机构名称、人物姓名、试点结果、产品参数等——除非它明确出现在用户要点中
+            2. 保持文档结构、章节标题、落款完全不变
+            3. 无法核实的具体数值替换为「以实际数据为准」，或删除整句
+            直接输出核查后的完整正文，不要任何解释。
+
+            [用户要点]
+            %s
+
+            [文档正文]
+            %s
+            """;
+
+    public DocAssistantService(@Qualifier("chatModel") ChatModel chatModel,
+                               @Qualifier("verifyChatModel") ChatModel verifyModel) {
         this.chatModel = chatModel;
+        this.verifyModel = verifyModel;
+    }
+
+    /** 生成后事实核查（软依赖：核查失败返回原文，不阻断生成） */
+    private String verifyAgainstPoints(String content, String points) {
+        if (!docVerifyEnabled || content == null || content.isBlank()) {
+            return content;
+        }
+        try {
+            String prompt = DOC_VERIFY_PROMPT.formatted(
+                    points == null || points.isBlank() ? "（无要点，仅保留通用性表述）" : points,
+                    content);
+            String checked = verifyModel.chat(prompt);
+            if (checked != null && !checked.isBlank()) {
+                return checked.strip();
+            }
+        } catch (Exception e) {
+            log.warn("[文档助手] 事实核查失败，返回原文: {}", e.getMessage());
+        }
+        return content;
     }
 
     /** 对话向导直接复用主力模型（生成/修改全文） */
@@ -84,7 +126,10 @@ public class DocAssistantService {
                 java.time.LocalDate.now(),
                 java.time.LocalDate.now().getYear());
         String content = chatModel.chat(prompt);
-        return content == null ? "" : content;
+        if (content == null) {
+            return "";
+        }
+        return verifyAgainstPoints(content, points);
     }
 
     /** 生成正文（兼容旧调用：落款默认"公司"） */

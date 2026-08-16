@@ -24,13 +24,19 @@ import java.util.concurrent.ConcurrentHashMap;
 public class BitableSinkService {
 
     private final FeishuClient client;
+    private final com.zzp.rag.mysql.mapper.BitableHandleMapper handleMapper;
+    private final com.zzp.rag.mysql.MysqlStatus mysqlStatus;
 
     /** 共享多维表格应用（所有数据表挂在同一个应用下）；kind → tableId */
     private volatile String sharedAppToken;
     private final ConcurrentHashMap<String, String> tableIds = new ConcurrentHashMap<>();
 
-    public BitableSinkService(FeishuClient client) {
+    public BitableSinkService(FeishuClient client,
+                              com.zzp.rag.mysql.mapper.BitableHandleMapper handleMapper,
+                              com.zzp.rag.mysql.MysqlStatus mysqlStatus) {
         this.client = client;
+        this.handleMapper = handleMapper;
+        this.mysqlStatus = mysqlStatus;
     }
 
     /** 写入多维表格 → 链接；失败返回 null（多为权限未开通） */
@@ -41,29 +47,36 @@ public class BitableSinkService {
                 synchronized (this) {
                     appToken = sharedAppToken;
                     if (appToken == null) {
-                        appToken = client.createBitableApp("经营数据看板");
+                        appToken = loadHandleAppToken();
                         if (appToken == null) {
-                            return null;
-                        }
-                        sharedAppToken = appToken;
-                        // 应用创建自带空「数据表」：删掉，打开链接直接落在数据表上
-                        for (FeishuClient.BitableTable t : client.listBitableTables(appToken)) {
-                            if ("数据表".equals(t.name())) {
-                                client.deleteBitableTable(appToken, t.tableId());
+                            appToken = client.createBitableApp("经营数据看板");
+                            if (appToken == null) {
+                                return null;
+                            }
+                            // 应用创建自带空「数据表」：删掉，打开链接直接落在数据表上
+                            for (FeishuClient.BitableTable t : client.listBitableTables(appToken)) {
+                                if ("数据表".equals(t.name())) {
+                                    client.deleteBitableTable(appToken, t.tableId());
+                                }
                             }
                         }
+                        sharedAppToken = appToken;
                     }
                 }
             }
             String tableId = tableIds.get(kind);
             if (tableId == null) {
-                tableId = client.createBitableTable(appToken,
-                        "metrics".equals(kind) ? "每日经营数据" : "员工报销明细",
-                        fieldsFor(kind));
+                tableId = loadHandleTableId(kind);
                 if (tableId == null) {
-                    return null;
+                    tableId = client.createBitableTable(appToken,
+                            "metrics".equals(kind) ? "每日经营数据" : "员工报销明细",
+                            fieldsFor(kind));
+                    if (tableId == null) {
+                        return null;
+                    }
                 }
                 tableIds.put(kind, tableId);
+                persistHandle(kind, appToken, tableId);
             }
             List<Map<String, Object>> records = buildRecords(kind, chartData);
             if (records.isEmpty()) {
@@ -86,6 +99,48 @@ public class BitableSinkService {
         } catch (Exception e) {
             log.warn("[多维表格] 写入失败 kind={}: {}", kind, e.getMessage());
             return null;
+        }
+    }
+
+    // ==================== 句柄持久化（MySQL：跨重启复用同一应用/表） ====================
+
+    private String loadHandleAppToken() {
+        if (!mysqlStatus.isAvailable()) {
+            return null;
+        }
+        try {
+            com.zzp.rag.mysql.entity.BitableHandleEntity e =
+                    handleMapper.selectList(null).stream().findFirst().orElse(null);
+            return e == null ? null : e.getAppToken();
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private String loadHandleTableId(String kind) {
+        if (!mysqlStatus.isAvailable()) {
+            return null;
+        }
+        try {
+            com.zzp.rag.mysql.entity.BitableHandleEntity e = handleMapper.selectById(kind);
+            return e == null ? null : e.getTableId();
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private void persistHandle(String kind, String appToken, String tableId) {
+        if (!mysqlStatus.isAvailable()) {
+            return;
+        }
+        try {
+            com.zzp.rag.mysql.entity.BitableHandleEntity e = new com.zzp.rag.mysql.entity.BitableHandleEntity();
+            e.setKind(kind);
+            e.setAppToken(appToken);
+            e.setTableId(tableId);
+            handleMapper.insertOrUpdate(e);
+        } catch (Exception ex) {
+            log.warn("[多维表格] 句柄持久化失败: {}", ex.getMessage());
         }
     }
 

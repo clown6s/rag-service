@@ -168,3 +168,12 @@ CREATE TABLE IF NOT EXISTS feishu_employee (
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_role (role)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='飞书通讯录员工（统一身份与角色）';
+
+
+-- 多维表格句柄持久化（「存入表格」跨重启复用同一应用/表）
+CREATE TABLE IF NOT EXISTS bitable_handle (
+  kind       VARCHAR(32) PRIMARY KEY,
+  app_token  VARCHAR(64) NOT NULL,
+  table_id   VARCHAR(64) NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='飞书多维表格句柄（经营数据/员工报销落盘复用）';
