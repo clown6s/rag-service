@@ -113,7 +113,8 @@ public class DocWizardService {
 
     private static final Pattern TRIGGER = Pattern.compile(
             "生成.{0,10}(文档|通知|报告|方案|周报|纪要|安排|手册|指南)|写.{0,10}(文档|通知|报告|方案|周报|纪要|安排|手册|指南)|起草|帮我写|拟一份"
-                    + "|关于.{2,40}(通知|报告|方案|周报|纪要|安排|文档|手册|指南)");
+                    + "|关于.{2,40}(通知|报告|方案|周报|纪要|安排|文档|手册|指南)"
+                    + "|做.{0,12}(攻略|手册|指南|方案|计划)|(旅游|旅行)?攻略$");
 
     private static final Pattern CANCEL = Pattern.compile("^(取消|算了|不做了|不要了|退出)[。！!？?\\s]*$");
 
@@ -161,7 +162,8 @@ public class DocWizardService {
                 : title.endsWith("报告") ? "报告"
                 : title.endsWith("方案") ? "方案"
                 : title.endsWith("周报") ? "周报"
-                : title.endsWith("纪要") ? "会议纪要" : "通用文档";
+                : title.endsWith("纪要") ? "会议纪要"
+                : title.endsWith("攻略") ? "攻略" : "通用文档";
         String points = cleanPoints(query, title);
         String kb = "";
         if (HOLIDAY_TITLE.matcher(title).find()) {
@@ -589,13 +591,20 @@ public class DocWizardService {
         if (m.find()) {
             return m.group(1);
         }
-        // 短输入且无句读：剥掉引导语后整体即标题（"写一个五一放假的通知"→"关于五一放假的通知"）
+        // 短输入且无句读：剥掉引导语后整体即标题（"写一个五一放假的通知"→"关于五一放假的通知"；
+        // "给我做一个去龙门石窟的旅游攻略"→"龙门石窟旅游攻略"）
         String stripped = query.strip();
         if (stripped.length() <= 30 && !stripped.matches(".*[，。；、\\n].*")) {
-            String title = stripped.replaceFirst("^(帮我|请|麻烦)?(生成|起草|拟一份|写一个|写一份|写份|写个|写)", "").strip();
+            String title = stripped.replaceFirst(
+                    "^(给我|帮我|请|麻烦)?(生成|起草|拟一份|写一个|写一份|写份|写个|写|做一个|做个|做一份|做份|做)", "").strip();
+            title = title.replaceFirst("^(去|来)", "").strip();
             if (title.length() >= 4) {
                 if (!title.startsWith("关于") && title.matches(".*(通知|报告|方案|周报|纪要)$")) {
                     return "关于" + title;
+                }
+                // 攻略类标题去"的"字（"龙门石窟的旅游攻略"→"龙门石窟旅游攻略"）
+                if (title.endsWith("攻略")) {
+                    title = title.replaceAll("的旅游攻略$", "旅游攻略").replaceAll("的攻略$", "攻略");
                 }
                 return title;
             }

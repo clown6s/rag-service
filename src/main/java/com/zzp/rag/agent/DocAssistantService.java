@@ -45,6 +45,12 @@ public class DocAssistantService {
             9. 中文正文使用规范中文术语（如"学习型智能体"），首次出现可附英文原词，不得中英混写
             """;
 
+    /** 文档类型 → 标准章节结构（未收录的类型用"通用文档"，模型自行组织） */
+    private static final java.util.Map<String, String> DOC_STRUCTURES = java.util.Map.of(
+            "攻略", "## 一、景点概况\n## 二、必看景点（各景点看点说明）\n## 三、建议游览路线\n"
+                    + "## 四、游览贴士（时间安排/穿着/注意事项）\n## 五、周边延伸\n"
+                    + "（门票价格、开放时间、交通班次等时效信息无法确定时写「以景区官方发布为准」，不得编造具体价格与时刻）");
+
     /** 处理类：mode → 指令映射 */
     private static final java.util.Map<String, String> MODE_INSTRUCTIONS = java.util.Map.of(
             "review", "你是文档审核员。对原文做校对审阅：不改写正文，只逐条列出问题点"
@@ -118,7 +124,7 @@ public class DocAssistantService {
     public String generateContent(String docType, String title, String points, String tone,
                                   String issuer) {
         String prompt = GENERATE_PROMPT.formatted(
-                docType == null || docType.isBlank() ? "通用文档" : docType,
+                DOC_STRUCTURES.getOrDefault(docType == null || docType.isBlank() ? "" : docType, "通用文档"),
                 title == null || title.isBlank() ? "未命名文档" : title,
                 tone == null || tone.isBlank() ? "正式、简洁、公文风格" : tone,
                 points == null || points.isBlank() ? "（无额外要点，按常规结构撰写）" : points,
