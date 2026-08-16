@@ -75,6 +75,9 @@ taskkill //PID <上面查到的PID> //F
 mvn -q package -DskipTests && java -jar target/rag-service-1.0.0-SNAPSHOT.jar
 ```
 
+顺序必须「先杀后编」：Windows 下运行中的 JVM 锁住 jar 文件，
+服务活着时 `mvn package` 会报 PluginExecutionException（jar 无法覆盖）。
+
 重启后两件事：重新登录后台拿 token；飞书长连接会自动重连（约 30 秒内）。
 
 ### 联调飞书（无需在飞书里真发消息）
