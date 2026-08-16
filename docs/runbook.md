@@ -80,6 +80,25 @@ mvn -q package -DskipTests && java -jar target/rag-service-1.0.0-SNAPSHOT.jar
 
 重启后两件事：重新登录后台拿 token；飞书长连接会自动重连（约 30 秒内）。
 
+### 服务看门狗（探活 + 自动拉起 + 飞书告警）
+
+```bash
+# 启动（脱离终端）：python scripts/watchdog.py
+powershell Start-Process python -ArgumentList 'D:\project\rag-service\scripts\watchdog.py' `
+  -WorkingDirectory 'D:\project\rag-service' -WindowStyle Hidden `
+  -RedirectStandardOutput 'D:\dsh-data\temp\watchdog.log' `
+  -RedirectStandardError 'D:\dsh-data\temp\watchdog-err.log'
+
+# 停止：找到跑 watchdog.py 的 python PID 后杀
+tasklist //FI "IMAGENAME eq python.exe" | grep -B1 -i python
+taskkill //F //PID <pid>
+```
+
+- 探活 `http://localhost:8080/healthz`（rag-service）与 `:7000/healthz`（oa-approval），间隔 30s
+- 连续 **3 次**失败（90s 窗口）→ 杀端口残留进程 → 自动拉起 → 飞书群告警卡片；拉起后冷却 90s
+- 人工重启两个服务要在 90s 内完成，否则看门狗会误判（多起一个实例端口冲突自退，无害）
+- 日志：`logs/watchdog.log`；webhook 读 `.env` 的 `FEISHU_ALERT_WEBHOOK_URL`
+
 ### 联调飞书（无需在飞书里真发消息）
 
 飞书事件可以通过 HTTP 模拟，直接 POST 到 `/api/rag/bridge/feishu/event`（verification token 为空时不验签）：
