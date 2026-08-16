@@ -478,14 +478,25 @@ public class FeishuChatBridge {
         try {
             client.replyMessage(messageId,
                     "收到，正在把《" + fc.fileName() + "》写入知识库，约需半分钟…");
-            FeishuClient.DownloadedFile df = client.downloadResource(
-                    fc.messageId(), fc.fileKey(), fc.resourceType());
-            if (df == null) {
-                client.replyMessage(messageId, "入库失败：文件已过期，请重新转发后再试。");
-                return;
+            // 图片 OCR 上下文：入库内容是识别文本，不是图片本身
+            // （历史坑：重新下载图片入库 → 图片解析不出文字 → 只存了个 LLM 摘要
+            //  chunk，实际识别文本根本没进库，检索"宫崎骏"自然落空）
+            boolean ocrText = "image".equals(fc.resourceType())
+                    && fc.content() != null && !fc.content().isBlank();
+            byte[] docBytes;
+            if (ocrText) {
+                docBytes = fc.content().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            } else {
+                FeishuClient.DownloadedFile df = client.downloadResource(
+                        fc.messageId(), fc.fileKey(), fc.resourceType());
+                if (df == null) {
+                    client.replyMessage(messageId, "入库失败：文件已过期，请重新转发后再试。");
+                    return;
+                }
+                docBytes = df.bytes();
             }
             String docId = ingestionPipeline.ingest(
-                    new com.zzp.rag.ingestion.ByteMultipartFile(fc.fileName(), df.bytes()),
+                    new com.zzp.rag.ingestion.ByteMultipartFile(fc.fileName() + ".txt", docBytes),
                     fc.fileName(), "飞书转发");
             fileContextService.clear(chatId, user);
             client.replyMessage(messageId,
