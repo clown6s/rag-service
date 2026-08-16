@@ -105,9 +105,12 @@ public class RetrievalPipeline {
 
         StringBuilder sb = new StringBuilder();
 
-        // 知识图谱上下文（实体关系）：标注仅供背景参考，防模型逐条复述图谱行
-        // （历史坑：三元组格式曾被逐条粘贴进回答；自然语言化后仍有逐条回声）
-        if (!result.graphContext().isBlank()) {
+        // 知识图谱上下文仅在图谱-only 场景注入（文档片段命中时不注入）：
+        // 文档命中时图谱是噪音——实况："高血压应该注意什么"文档片段正常命中，
+        // 但模型把 20 条图谱关系整块贴进回答（关系链拉平还产生语义错误：
+        // "高血压（既往史包括 → 常见年龄为）：中老年"实为心源性哮喘的特征）。
+        // 图谱只承担"文档覆盖不到"时的兜底角色。
+        if (result.segments().isEmpty() && !result.graphContext().isBlank()) {
             sb.append("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n")
                     .append(result.graphContext()).append("\n\n");
         }

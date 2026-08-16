@@ -67,6 +67,9 @@ public final class StreamTokenFixer {
         result = convertBulletsToNumbered(result);
         // 2.5 全行加粗的编号行（模型的编号章节标题，如 "9. **关联罪名**"）→ 剥编号还原加粗标题
         result = result.replaceAll("(?m)^\\d+\\.\\s*(\\*\\*[^*\\n]+\\*\\*)\\s*$", "$1");
+        // 2.55 编号与内容拆行合并："1.\n一般高血压患者" → "1. 一般高血压患者"
+        //      （模型偶发在编号后断行；孤立编号行合并回内容行）
+        result = result.replaceAll("(?m)^(\\d+)\\.\\s*\\n(?=[^\\s\\n])", "$1. ");
         // 2.6 编号连续性修正：模型自编号与转换器编号混用导致跨节连号
         //     （"关联罪名"节从 2. 开始）→ 按连续行段重新编号（非编号行/空行打断则重置）
         result = renumberNumberedLists(result);
@@ -96,6 +99,10 @@ public final class StreamTokenFixer {
         //      含 GraphStore 的 "- 实体 --[关系]--> 实体" 与模型转写变体）
         result = result.replaceAll(
                 "(?m)^[ \\t]*\\d*\\.?\\s*[^-–—\\n]{1,40}\\s*[-–—]{2,3}\\s*\\[[^\\]\\n]*\\][-–—]{0,2}\\s*>\\s*.+$", "");
+        // 10.5 图谱自然语言回声块剥除："实体（关系）：目标1、目标2" 连续 ≥3 行成块出现时整块删除
+        //      （图谱上下文自然语言化后模型仍整块贴进回答——"高血压应该注意什么"实况贴了 20 行；
+        //       单行可能是正常表述，≥3 连续行必是回声）
+        result = stripGraphEchoBlocks(result);
         // 11. 问答对模板泄漏：Q&A 切分文档的 chunk 含"问：…答：…"，
         //     模型逐条复制"答："原文（红旗渠实况）→ 剥前缀保留内容
         result = result.replaceAll("(?m)^[ \\t]*\\d*\\.?\\s*[问答][：:]\\s*", "");
@@ -263,6 +270,28 @@ public final class StreamTokenFixer {
             sb.append(row).append("|");
         }
         return sb.toString().strip();
+    }
+
+    /** 图谱自然语言回声块剥除：见 fixFull 规则 10.5 的调用说明 */
+    private static String stripGraphEchoBlocks(String text) {
+        java.util.regex.Pattern line = java.util.regex.Pattern.compile(
+                "^[^\\n：（）]{1,40}（[^\\n）]{1,40}）：[^\\n。！？；]{0,100}$");
+        String[] lines = text.split("\n", -1);
+        java.util.List<String> kept = new java.util.ArrayList<>();
+        int i = 0;
+        while (i < lines.length) {
+            int j = i;
+            while (j < lines.length && line.matcher(lines[j].strip()).matches()) {
+                j++;
+            }
+            if (j - i >= 3) {
+                i = j;   // ≥3 连续图谱行 → 成块回声，整块删除
+            } else {
+                kept.add(lines[i]);
+                i++;
+            }
+        }
+        return String.join("\n", kept);
     }
 
     /** 把行首 `- ` / `* ` / `🔹 ` 的无序列表按出现顺序转为 `N. ` 有序列表
