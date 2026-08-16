@@ -479,9 +479,14 @@ public class DocWizardService {
         int sumIdx = out.indexOf("【修改摘要】");
         s.content = (sumIdx >= 0 ? out.substring(0, sumIdx) : out).strip();
         String summary = extractSummary(out);
-        String reply = buildPreviewText(s, summary);
+        // 已直出云文档的：不在聊天里刷全文与摘要，只提示更新完成（文档即预览）
         if (s.cloudDocId != null && syncToCloudDoc(s)) {
-            reply = reply + "\n\n已同步更新到云文档：" + feishuClient.cloudDocUrl(s.cloudDocId);
+            return new WizardResult("已更新到云文档（在线可编辑）：\n"
+                    + feishuClient.cloudDocUrl(s.cloudDocId), "DOC_WIZARD", null, null);
+        }
+        String reply = buildPreviewText(s, summary);
+        if (s.cloudDocId != null) {
+            reply = reply + "\n\n（云文档同步失败，以上文为准）";
         }
         return new WizardResult(reply, "DOC_WIZARD", null, null);
     }
