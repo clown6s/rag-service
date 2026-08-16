@@ -783,6 +783,11 @@ public class FeishuClient {
 
     /** 下载消息资源文件：GET im/v1/messages/{message_id}/resources/{file_key}?type=file */
     public DownloadedFile downloadResource(String messageId, String fileKey) {
+        return downloadResource(messageId, fileKey, "file");
+    }
+
+    /** 下载消息资源（type=file 文件 / image 图片） */
+    public DownloadedFile downloadResource(String messageId, String fileKey, String type) {
         try {
             String token = tenantAccessToken();
             if (token == null) {
@@ -792,26 +797,27 @@ public class FeishuClient {
                             config.baseUrl() + "/open-apis/im/v1/messages/"
                                     + java.net.URLEncoder.encode(messageId, StandardCharsets.UTF_8)
                                     + "/resources/" + java.net.URLEncoder.encode(fileKey, StandardCharsets.UTF_8)
-                                    + "?type=file"))
+                                    + "?type=" + type))
                     .timeout(Duration.ofSeconds(60))
                     .header("Authorization", "Bearer " + token)
                     .GET()
                     .build();
             HttpResponse<byte[]> resp = http.send(req, HttpResponse.BodyHandlers.ofByteArray());
             if (resp.statusCode() != 200 || resp.body() == null || resp.body().length == 0) {
-                log.warn("[飞书] 文件下载失败 http={} len={}", resp.statusCode(),
+                log.warn("[飞书] 资源下载失败 type={} http={} len={}", type, resp.statusCode(),
                         resp.body() == null ? 0 : resp.body().length);
                 return null;
             }
-            String fileName = fileNameFromDisposition(
-                    resp.headers().firstValue("Content-Disposition").orElse(null));
+            String fileName = "image".equals(type) ? "feishu_image.png"
+                    : fileNameFromDisposition(
+                            resp.headers().firstValue("Content-Disposition").orElse(null));
             if (fileName == null) {
                 fileName = fileNameFromContentType(
                         resp.headers().firstValue("Content-Type").orElse(null));
             }
             return new DownloadedFile(resp.body(), fileName);
         } catch (Exception e) {
-            log.warn("[飞书] 文件下载异常: {}", e.getMessage());
+            log.warn("[飞书] 资源下载异常 type={}: {}", type, e.getMessage());
             return null;
         }
     }

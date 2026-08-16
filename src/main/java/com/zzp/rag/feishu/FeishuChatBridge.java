@@ -57,6 +57,7 @@ public class FeishuChatBridge {
     private final java.util.concurrent.ConcurrentHashMap<String, java.util.Map<String, Object>> chartCache =
             new java.util.concurrent.ConcurrentHashMap<>();
     private final com.zzp.rag.feishu.BitableSinkService bitableSinkService;
+    private final com.zzp.rag.ocr.ZhipuOcrClient zhipuOcrClient;
 
     public FeishuChatBridge(FeishuConfig config, FeishuClient client,
                             AgentOrchestrator orchestrator,
@@ -65,6 +66,7 @@ public class FeishuChatBridge {
                             com.zzp.rag.ingestion.DocumentParser documentParser,
                             com.zzp.rag.ingestion.IngestionPipeline ingestionPipeline,
                             BitableSinkService bitableSinkService,
+                            com.zzp.rag.ocr.ZhipuOcrClient zhipuOcrClient,
                             AuditService auditService,
                             ObjectMapper objectMapper) {
         this.config = config;
@@ -75,6 +77,7 @@ public class FeishuChatBridge {
         this.documentParser = documentParser;
         this.ingestionPipeline = ingestionPipeline;
         this.bitableSinkService = bitableSinkService;
+        this.zhipuOcrClient = zhipuOcrClient;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
     }
@@ -127,8 +130,7 @@ public class FeishuChatBridge {
                 return;
             }
             if ("image".equals(messageType)) {
-                client.replyMessage(messageId,
-                        "图片暂不支持解析，请发送文件（docx / pdf / xlsx / pptx / txt 等）。");
+                handleImageMessage(chatId, messageId, contentJson, auditUser, ctx, start);
                 return;
             }
             if (!"text".equals(messageType)) {
@@ -315,6 +317,62 @@ public class FeishuChatBridge {
     }
 
     /**
+     * 图片消息处理：下载素材 → 智谱 OCR 识别 → 建立会话文件上下文（识别文本可问答/入库）。
+     */
+    private void handleImageMessage(String chatId, String messageId, String contentJson,
+                                    String auditUser, AuditEvent.AuditContext ctx, long start) {
+        try {
+            JsonNode node = objectMapper.readTree(contentJson);
+            String imageKey = node.path("image_key").asText(null);
+            if (imageKey == null || imageKey.isBlank()) {
+                client.replyMessage(messageId, "未识别到图片，请重新发送。");
+                return;
+            }
+            if (!zhipuOcrClient.available()) {
+                client.replyMessage(messageId,
+                        "图片识别未启用（未配置智谱 OCR API Key），请发送文件（docx / pdf 等）。");
+                return;
+            }
+            FeishuClient.DownloadedFile df = client.downloadResource(messageId, imageKey, "image");
+            if (df == null || df.bytes() == null || df.bytes().length == 0) {
+                client.replyMessage(messageId, "图片下载失败，请重试。");
+                return;
+            }
+            long ocrStart = System.currentTimeMillis();
+            String text = zhipuOcrClient.recognize(df.bytes());
+            log.info("[飞书] 图片 OCR 完成 chars={} 耗时 {}ms",
+                    text == null ? 0 : text.length(), System.currentTimeMillis() - ocrStart);
+            if (text == null || text.isBlank()) {
+                client.replyMessage(messageId, "图片里没有识别到文字。");
+                return;
+            }
+            fileContextService.put(chatId, auditUser,
+                    "图片识别_" + java.time.LocalDateTime.now().format(DateTimeFormatter.ofPattern("MMddHHmmss")),
+                    text, messageId, imageKey, "image");
+            client.replyMessage(messageId,
+                    "已识别图片文字（" + text.length() + " 字）：\n" + text.substring(0, Math.min(200, text.length()))
+                            + (text.length() > 200 ? "\n…（仅预览，全文已存）" : "")
+                            + "\n\n接下来的提问我会结合图片内容回答；回复「入库」把识别内容存入知识库；回复「清除文件」移除。");
+            auditService.record(new AuditEvent(
+                    ctx.traceId(),
+                    LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                    auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/image_ocr",
+                    null, "图片识别", 0, List.of(), 0, false, 0,
+                    "chars=" + text.length(), text.length(),
+                    System.currentTimeMillis() - start, "SUCCESS", null, 0));
+        } catch (Exception e) {
+            log.error("[飞书] 图片消息处理失败", e);
+            client.replyMessage(messageId, "图片识别失败：" + e.getMessage());
+            auditService.record(new AuditEvent(
+                    ctx.traceId(),
+                    LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                    auditUser != null ? auditUser : ctx.user(), ctx.ip(), "feishu/image_ocr",
+                    null, null, 0, List.of(), 0, false, 0, null, 0,
+                    System.currentTimeMillis() - start, "FAILED", e.getMessage(), 0));
+        }
+    }
+
+    /**
      * 转发文件处理：下载素材 → 解析（sidecar 双通道/Tika）→ 建立会话文件上下文。
      * 之后该会话的提问自动注入文件内容作答（见 AgentOrchestrator 的 promptBlock 注入）。
      */
@@ -355,7 +413,7 @@ public class FeishuChatBridge {
             }
             boolean truncated = text.length() > FeishuFileContextService.MAX_CONTENT_CHARS;
             String stored = truncated ? text.substring(0, FeishuFileContextService.MAX_CONTENT_CHARS) : text;
-            fileContextService.put(chatId, auditUser, fileName, stored, messageId, fileKey);
+            fileContextService.put(chatId, auditUser, fileName, stored, messageId, fileKey, "file");
             client.replyMessage(messageId,
                     "已解析《" + fileName + "》（" + text.length() + " 字"
                             + (truncated ? "，超出 6 万字部分未保留" : "") + "）。\n"
@@ -387,7 +445,8 @@ public class FeishuChatBridge {
         try {
             client.replyMessage(messageId,
                     "收到，正在把《" + fc.fileName() + "》写入知识库，约需半分钟…");
-            FeishuClient.DownloadedFile df = client.downloadResource(fc.messageId(), fc.fileKey());
+            FeishuClient.DownloadedFile df = client.downloadResource(
+                    fc.messageId(), fc.fileKey(), fc.resourceType());
             if (df == null) {
                 client.replyMessage(messageId, "入库失败：文件已过期，请重新转发后再试。");
                 return;

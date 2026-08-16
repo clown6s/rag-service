@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FeishuFileContextService {
 
     public record FileCtx(String fileName, String content, String messageId, String fileKey,
-                          long createdAt) {}
+                          String resourceType, long createdAt) {}
 
     private static final long TTL_MS = 30 * 60_000L;
     public static final int MAX_CONTENT_CHARS = 60_000;
@@ -30,11 +30,11 @@ public class FeishuFileContextService {
     }
 
     public void put(String chatId, String user, String fileName, String content,
-                    String messageId, String fileKey) {
+                    String messageId, String fileKey, String resourceType) {
         ctxs.put(key(chatId, user), new FileCtx(fileName, content, messageId, fileKey,
-                System.currentTimeMillis()));
-        log.info("[飞书文件] 会话文件上下文已建立 chat={} file={} chars={}",
-                chatId, fileName, content.length());
+                resourceType == null ? "file" : resourceType, System.currentTimeMillis()));
+        log.info("[飞书文件] 会话文件上下文已建立 chat={} file={} chars={} type={}",
+                chatId, fileName, content.length(), resourceType);
     }
 
     /** 取上下文（过期自动清理） */
