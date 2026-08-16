@@ -271,6 +271,10 @@ public class FeishuChatBridge {
             docWizardService.setEditorHint(auditUser);
             // 按人控权：open_id → 通讯录角色 → 数字员工（不同角色不同知识范围）
             Long agentId = roleAgentId(contactSyncService.resolveRole(auditUser));
+            // 图表静态持有器跨消息串味防护：先清残留——Web 非流式端点/重新生成等
+            // 其他 answer() 调用方也会把图表写进 sink，不清理会挂到无关消息上
+            // （实况："介绍一下龙门石窟"被挂上一张残留的报销数据卡）
+            com.zzp.rag.mcp.McpChartSink.getAndClear();
             AgentOrchestrator.AgentAnswer answer;
             try {
                 answer = orchestrator.answer(chatId, query, agentId);
@@ -800,7 +804,10 @@ public class FeishuChatBridge {
                     return;
                 }
                 Long agentId = config.defaultAgentId() > 0 ? config.defaultAgentId() : null;
+                // 重新生成卡片不渲染数据卡：answer() 产生的图表直接丢弃（防 sink 残留串味）
+                com.zzp.rag.mcp.McpChartSink.getAndClear();
                 AgentOrchestrator.AgentAnswer answer = orchestrator.answer(chatId, query, agentId);
+                com.zzp.rag.mcp.McpChartSink.getAndClear();
                 String markdown = StreamTokenFixer.fixFull(answer.answer());
                 String card = buildCard(query, markdown, answer.sources(), openChatId);
                 if (card == null || !client.updateCard(openMessageId, card)) {

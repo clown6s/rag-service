@@ -83,6 +83,9 @@ public class AgentChatController {
         try {
             AgentOrchestrator.AgentAnswer result =
                     orchestrator.answer(conversationId, req.query(), req.agentId());
+            // 本端点不渲染图表（SSE 流式端点走 onChart）：answer() 产生的图表直接丢弃，
+            // 防 McpChartSink 静态残留挂到后续飞书消息上（实况：无关消息被挂报销数据卡）
+            com.zzp.rag.mcp.McpChartSink.getAndClear();
             // 整段格式修复（与固定流水线端点一致的兜底）
             String answer = StreamTokenFixer.fixFull(result.answer());
             // 法名引用校验：库外引用追加标注（防引用幻觉）；
