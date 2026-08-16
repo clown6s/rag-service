@@ -41,6 +41,26 @@ public class SopRegistry {
 
     private static final List<SopDefinition> DEFS = List.of(
             new SopDefinition(
+                    "leave_action",
+                    "请假申请办理（OA 四步：查员工→校验规则→提交→回执）",
+                    List.of("提交请假", "帮我请假", "帮我请", "申请年假", "请事假", "请病假",
+                            "请年假", "请调休", "请个假", "请一天假", "请两天假", "请三天假",
+                            "请半天假", "请假一天", "请假两天", "请假三天"),
+                    List.of(
+                            new SopDefinition.SopStep("tool", "oa_employee_list", null),
+                            new SopDefinition.SopStep("extract", null,
+                                    "从用户的请假请求中提取以下字段："
+                                            + "userName（申请人姓名）、startTime（请假开始时间，格式 yyyy-MM-dd HH:mm:ss，"
+                                            + "整天从 00:00:00 开始）、endTime（请假结束时间，整天到 23:59:59）、"
+                                            + "days（请假天数，数字）、leaveType（1事假/2病假/3年假/4调休）、"
+                                            + "reason（请假事由）"),
+                            new SopDefinition.SopStep("validate", "leave_rules", null),
+                            new SopDefinition.SopStep("tool", "oa_leave_submit", null),
+                            new SopDefinition.SopStep("end", null,
+                                    "请用友好简洁的语气告知用户请假办理结果："
+                                            + "引用流程上下文里 OA 返回的申请单号与状态；"
+                                            + "若流程中校验未通过，直接转达校验错误，不要编造其他信息。"))),
+            new SopDefinition(
                     "leave_apply",
                     "请假申请流程",
                     // 收窄关键词：裸"请假"会截胡"帮我提交请假申请"类 OA 操作请求
