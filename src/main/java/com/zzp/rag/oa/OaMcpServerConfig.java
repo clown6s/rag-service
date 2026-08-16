@@ -166,6 +166,7 @@ public class OaMcpServerConfig {
             java.util.List<Object> values = new java.util.ArrayList<>();
             java.util.List<java.util.List<String>> table = new java.util.ArrayList<>();
             table.add(java.util.List.of("日期", "类型", "金额", "备注"));
+            java.util.List<Map<String, Object>> rawItems = new java.util.ArrayList<>();
             for (JsonNode it : data.path("items")) {
                 Map<String, Object> row = new java.util.LinkedHashMap<>();
                 row.put("date", it.path("d").asText());
@@ -175,6 +176,14 @@ public class OaMcpServerConfig {
                 table.add(java.util.List.of(it.path("d").asText(),
                         it.path("expenseType").asText(), fmt(it.path("amount")),
                         it.path("remark").asText("")));
+                Map<String, Object> raw = new java.util.LinkedHashMap<>();
+                raw.put("d", it.path("d").asText());
+                raw.put("empName", it.path("empName").asText(""));
+                raw.put("deptName", it.path("deptName").asText(""));
+                raw.put("expenseType", it.path("expenseType").asText(""));
+                raw.put("amount", it.path("amount").asDouble());
+                raw.put("remark", it.path("remark").asText(""));
+                rawItems.add(raw);
             }
             Map<String, Object> chart = new java.util.LinkedHashMap<>();
             chart.put("kind", "expenses");
@@ -184,8 +193,10 @@ public class OaMcpServerConfig {
             chart.put("seriesField", "series");
             chart.put("title", data.path("employee").asText("全员") + "近"
                     + data.path("count").asInt() + "笔报销（元）");
+            chart.put("employee", data.path("employee").asText("全员"));
             chart.put("values", values);
             chart.put("table", table);
+            chart.put("rawItems", rawItems);
             chart.put("summary", "合计 " + fmt(data.path("total"))
                     + " 元，共 " + data.path("count").asInt() + " 笔");
             return chart;

@@ -481,6 +481,230 @@ public class FeishuClient {
         }
     }
 
+    // ==================== 多维表格（Bitable） ====================
+
+    /** 多维表格句柄（复用：同 kind 不重复建应用） */
+    public record BitableHandle(String appToken, String tableId) {}
+
+    /** 创建多维表格应用 → app_token（失败返回 null，多为未开通 bitable:app 权限） */
+    public String createBitableApp(String name) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return null;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of("name", name));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/bitable/v1/apps"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            JsonNode node = objectMapper.readTree(resp.body());
+            String appToken = node.path("data").path("app").path("app_token").asText(null);
+            if (appToken == null) {
+                log.warn("[飞书] 多维表格应用创建失败: {}", truncate(resp.body(), 200));
+            }
+            return appToken;
+        } catch (Exception e) {
+            log.warn("[飞书] 多维表格应用创建异常: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 建表（fields 在创建时一次性定义：type 1文本/2数字/5日期） → table_id */
+    public String createBitableTable(String appToken, String name,
+                                     java.util.List<java.util.Map<String, Object>> fields) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return null;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of("table",
+                    java.util.Map.of(
+                            "name", name,
+                            "default_view_name", "默认视图",
+                            "fields", fields)));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/bitable/v1/apps/"
+                                    + appToken + "/tables"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            JsonNode node = objectMapper.readTree(resp.body());
+            String tableId = node.path("data").path("table_id").asText(null);
+            if (tableId == null) {
+                log.warn("[飞书] 多维表格建表失败: {}", truncate(resp.body(), 200));
+            }
+            return tableId;
+        } catch (Exception e) {
+            log.warn("[飞书] 多维表格建表异常: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 批量写入记录（fields: 字段名 → 值；日期字段用毫秒时间戳） */
+    public boolean batchCreateBitableRecords(String appToken, String tableId,
+                                             java.util.List<java.util.Map<String, Object>> records) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null || records.isEmpty()) {
+                return false;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of("records", records.stream()
+                    .map(r -> java.util.Map.of("fields", r)).toList()));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/bitable/v1/apps/"
+                                    + appToken + "/tables/" + tableId + "/records/batch_create"))
+                    .timeout(Duration.ofSeconds(30))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            boolean ok = resp.statusCode() == 200
+                    && objectMapper.readTree(resp.body()).path("code").asInt() == 0;
+            if (!ok) {
+                log.warn("[飞书] 多维表格写入失败: {}", truncate(resp.body(), 200));
+            }
+            return ok;
+        } catch (Exception e) {
+            log.warn("[飞书] 多维表格写入异常: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /** 列出全部记录 id（替换模式：先清空再写入） */
+    public java.util.List<String> listBitableRecordIds(String appToken, String tableId) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return java.util.List.of();
+            }
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/bitable/v1/apps/"
+                                    + appToken + "/tables/" + tableId + "/records?page_size=500"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Authorization", "Bearer " + token)
+                    .GET()
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            JsonNode node = objectMapper.readTree(resp.body());
+            java.util.List<String> ids = new java.util.ArrayList<>();
+            node.path("data").path("items").forEach(it ->
+                    ids.add(it.path("record_id").asText("")));
+            return ids;
+        } catch (Exception e) {
+            log.warn("[飞书] 多维表格记录列表异常: {}", e.getMessage());
+            return java.util.List.of();
+        }
+    }
+
+    /** 批量删除记录 */
+    public boolean batchDeleteBitableRecords(String appToken, String tableId,
+                                             java.util.List<String> recordIds) {
+        if (recordIds.isEmpty()) {
+            return true;
+        }
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return false;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of("records", recordIds));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/bitable/v1/apps/"
+                                    + appToken + "/tables/" + tableId + "/records/batch_delete"))
+                    .timeout(Duration.ofSeconds(30))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            boolean ok = resp.statusCode() == 200
+                    && objectMapper.readTree(resp.body()).path("code").asInt() == 0;
+            if (!ok) {
+                log.warn("[飞书] 多维表格删除失败: {}", truncate(resp.body(), 200));
+            }
+            return ok;
+        } catch (Exception e) {
+            log.warn("[飞书] 多维表格删除异常: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /** 多维表格组织内可读（PATCH drive permissions，type=bitable） */
+    public void makeBitableOrgReadable(String appToken) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "link_share_entity", "tenant_readable",
+                    "external_access_entity", "closed",
+                    "external_access", false));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/drive/v1/permissions/"
+                                    + appToken + "/public?type=bitable"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .method("PATCH", HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200 || objectMapper.readTree(resp.body()).path("code").asInt() != 0) {
+                log.warn("[飞书] 多维表格公开设置失败: {}", truncate(resp.body(), 150));
+            }
+        } catch (Exception e) {
+            log.warn("[飞书] 多维表格公开设置异常: {}", e.getMessage());
+        }
+    }
+
+    /** 多维表格编辑者授权（发起人可编辑） */
+    public boolean addBitableEditor(String appToken, String openId) {
+        try {
+            String token = tenantAccessToken();
+            if (token == null) {
+                return false;
+            }
+            String body = objectMapper.writeValueAsString(java.util.Map.of(
+                    "member_type", "openid",
+                    "member_id", openId,
+                    "perm", "full_access"));
+            HttpRequest req = HttpRequest.newBuilder(URI.create(
+                            config.baseUrl() + "/open-apis/drive/v1/permissions/"
+                                    + appToken + "/members?type=bitable"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .header("Authorization", "Bearer " + token)
+                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            boolean ok = resp.statusCode() == 200
+                    && objectMapper.readTree(resp.body()).path("code").asInt() == 0;
+            if (!ok) {
+                log.warn("[飞书] 多维表格编辑者添加失败: {}", truncate(resp.body(), 150));
+            }
+            return ok;
+        } catch (Exception e) {
+            log.warn("[飞书] 多维表格编辑者添加异常: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /** 多维表格访问链接 */
+    public String bitableUrl(String appToken) {
+        return config.baseUrl().contains("open.feishu.cn")
+                ? "https://feishu.cn/base/" + appToken
+                : config.baseUrl() + "/base/" + appToken;
+    }
+
     // ==================== 文件消息（文档生成定稿推送 + 转发文件下载） ====================
 
     /** 下载资源（用户转发给机器人的文件/图片）→ 字节 + 推测文件名 */

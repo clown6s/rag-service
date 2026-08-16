@@ -53,12 +53,18 @@ public class FeishuChatBridge {
     private final java.util.concurrent.ConcurrentHashMap<String, Boolean> formInFlight =
             new java.util.concurrent.ConcurrentHashMap<>();
 
+    /** 会话最近一次图表数据（「存入表格」命令用；按群缓存） */
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.Map<String, Object>> chartCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final com.zzp.rag.feishu.BitableSinkService bitableSinkService;
+
     public FeishuChatBridge(FeishuConfig config, FeishuClient client,
                             AgentOrchestrator orchestrator,
                             com.zzp.rag.agent.DocWizardService docWizardService,
                             FeishuFileContextService fileContextService,
                             com.zzp.rag.ingestion.DocumentParser documentParser,
                             com.zzp.rag.ingestion.IngestionPipeline ingestionPipeline,
+                            BitableSinkService bitableSinkService,
                             AuditService auditService,
                             ObjectMapper objectMapper) {
         this.config = config;
@@ -68,6 +74,7 @@ public class FeishuChatBridge {
         this.fileContextService = fileContextService;
         this.documentParser = documentParser;
         this.ingestionPipeline = ingestionPipeline;
+        this.bitableSinkService = bitableSinkService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
     }
@@ -138,6 +145,29 @@ public class FeishuChatBridge {
             // 文档向导：key = 会话+用户（与卡片回调、takePending 的 key 必须一致）
             String wizardUser = auditUser;
             String wizardKey = chatId + ":" + (wizardUser == null ? "anon" : wizardUser);
+
+            // 图表数据落盘：回复「存入表格」把最近一次查询的数据写入飞书多维表格
+            if (query.strip().matches("存入表格|保存到表格|写入表格|存到多维表格|存入多维表格")) {
+                java.util.Map<String, Object> cached = chartCache.get(chatId);
+                if (cached == null || cached.isEmpty()) {
+                    client.replyMessage(messageId,
+                            "最近还没有查询过数据。先问一次（如「最近7天经营数据」「王强最近7天报销」），"
+                                    + "数据卡片出来后再回复「存入表格」。");
+                    return;
+                }
+                String url = bitableSinkService.save(
+                        String.valueOf(cached.getOrDefault("kind", "")), cached, auditUser);
+                if (url != null) {
+                    client.replyMessage(messageId,
+                            "已写入飞书多维表格（可在线编辑/排序/做仪表盘）：\n" + url
+                                    + "\n\n每次「存入表格」都会用最新数据覆盖表内容。");
+                } else {
+                    client.replyMessage(messageId,
+                            "写入多维表格失败：飞书应用尚未开通多维表格 API 权限（bitable:app），"
+                                    + "请在飞书开放平台后台开通后重试。");
+                }
+                return;
+            }
 
             // 转发文件上下文指令（入库/清除）——优先于向导与其他路由
             FeishuFileContextService.FileCtx fileCtx = fileContextService.get(chatId, wizardUser);
@@ -241,6 +271,7 @@ public class FeishuChatBridge {
             if (chartData != null && !chartData.isEmpty()) {
                 log.info("[飞书] 数据卡片构建 chat={} kind={} title={}", chatId,
                         chartData.get("kind"), chartData.get("title"));
+                chartCache.put(chatId, chartData);   // 「存入表格」命令用
                 String card = buildDataCard(markdown, chartData, answer.sources());
                 replied = card != null && client.replyCard(messageId, card);
                 if (!replied) {
@@ -531,7 +562,7 @@ public class FeishuChatBridge {
             elements.add(java.util.Map.of("tag", "hr"));
             // schema 2.0 不支持 note 组件（unsupported tag note），来源注记用 markdown
             elements.add(java.util.Map.of("tag", "markdown",
-                    "content", "数据来源：OA 业务系统 · 图表由 VChart 渲染"));
+                    "content", "数据来源：OA 业务系统 · 图表由 VChart 渲染\n回复「存入表格」可写入飞书多维表格"));
 
             java.util.Map<String, Object> card = new java.util.LinkedHashMap<>();
             card.put("schema", "2.0");
